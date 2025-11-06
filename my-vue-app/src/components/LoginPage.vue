@@ -89,25 +89,26 @@ export default {
     }
   },
   methods: {
-    handleLogin() {
-      if (!this.form.email || !this.form.password) {
-        this.message = { type: 'error', text: '请填写完整信息' }
-        return
-      }
+handleLogin() {
+  if (!this.form.email || !this.form.password) {
+    this.message = { type: 'error', text: '请填写完整信息' }
+    return
+  }
 
-      // 这里可以调用实际的登录 API
-      this.message = { 
-        type: 'success', 
-        text: `${this.loginType === 'user' ? '用户' : '管理员'}登录成功！` 
-      }
-      
-      console.log(`${this.loginType}登录:`, this.form)
-      
-      // 清空消息
-      setTimeout(() => {
-        this.message = { type: '', text: '' }
-      }, 3000)
+  this.message = { 
+    type: 'success', 
+    text: `${this.loginType === 'user' ? '用户' : '管理员'}登录成功！` 
+  }
+
+  // 根据 loginType 跳转不同主页
+  setTimeout(() => {
+    if (this.loginType === 'user') {
+      this.$router.push('/home-user')
+    } else {
+      this.$router.push('/home-admin')
     }
+  }, 500)
+}
   }
 }
 </script>

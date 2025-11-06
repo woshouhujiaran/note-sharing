@@ -1,27 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AuthView from '../views/AuthView.vue'
+import HomeUser from '../views/HomeUser.vue'
+import HomeAdmin from '../views/HomeAdmin.vue'
 
 const routes = [
-  {
-    path: '/',
-    redirect: '/login'
-  },
-  {
-    path: '/login',
-    name: 'Login',
-    component: AuthView
-  },
-  {
-    path: '/register',
-    name: 'Register',
-    component: AuthView
-  },
-  {
-    path: '/forgot-password',
-    name: 'ForgotPassword',
-    component: AuthView
-  }
+  { path: '/', redirect: '/login' },
+  { path: '/login', name: 'Login', component: AuthView },
+  { path: '/register', name: 'Register', component: AuthView },
+  { path: '/forgot-password', name: 'ForgotPassword', component: AuthView },
+  { path: '/home-user', name: 'HomeUser', component: HomeUser },
+  { path: '/home-admin', name: 'HomeAdmin', component: HomeAdmin }
 ]
+
 
 const router = createRouter({
   history: createWebHistory(),
