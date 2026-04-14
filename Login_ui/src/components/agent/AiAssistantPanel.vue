@@ -44,7 +44,7 @@
           <button type="button" class="ai-secondary-button" @click="syncContextToFrame">
             推送上下文
           </button>
-          <button type="button" class="ai-secondary-button" @click="clearMessages">
+            <button type="button" class="ai-secondary-button" @click="clearMessages">
             清空会话
           </button>
         </div>
@@ -104,7 +104,10 @@
             <article v-for="item in messages" :key="item.id" :class="['ai-message', item.role]">
               <div class="ai-message-role">{{ item.roleLabel }}</div>
               <div class="ai-message-content">{{ item.content }}</div>
-              <div class="ai-message-meta">{{ item.timeLabel }}</div>
+              <div class="ai-message-meta">
+                {{ item.timeLabel }}
+                <span v-if="item.source" class="ai-message-source">· {{ item.source }}</span>
+              </div>
             </article>
 
             <div v-if="messages.length === 0" class="ai-empty-state">
@@ -122,8 +125,8 @@
             ></textarea>
             <div class="ai-composer-actions">
               <button type="button" class="ai-secondary-button" @click="draft = suggestDraft()">示例文本</button>
-              <button type="submit" class="ai-send-button" :disabled="!draft.trim() || !aiEnabled">
-                发送
+              <button type="submit" class="ai-send-button" :disabled="(!draft.trim() && !isStreaming) || !aiEnabled">
+                {{ isStreaming ? '停止' : '发送' }}
               </button>
             </div>
           </form>
@@ -166,6 +169,7 @@ const logRef = ref(null)
 const shellFrameRef = ref(null)
 const configuredOrigin = computed(() => getAiBffOrigin())
 const shellUrl = computed(() => (aiEnabled.value ? getAiShellUrl() : ''))
+const isStreaming = ref(false)
 
 const contextSummary = computed(() => {
   const ctx = props.context || {}
@@ -197,9 +201,9 @@ const quickActions = computed(() => {
   return actions
 })
 
-const stopScrollToken = ref(0)
 let frameMessageHandler = null
 let aiContextTimer = null
+let streamAbortController = null
 
 function nowLabel() {
   return new Date().toLocaleTimeString()
@@ -214,6 +218,30 @@ function appendMessage(role, content) {
     content,
     timeLabel: nowLabel()
   })
+  scrollToBottom()
+}
+
+function appendAssistantMessage(source = 'BFF') {
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    role: 'assistant',
+    roleLabel: 'AI',
+    content: '',
+    timeLabel: nowLabel(),
+    source
+  }
+  messages.value.push(item)
+  scrollToBottom()
+  return item.id
+}
+
+function updateAssistantMessage(messageId, patch = {}) {
+  const index = messages.value.findIndex(item => item.id === messageId)
+  if (index === -1) return
+  messages.value[index] = {
+    ...messages.value[index],
+    ...patch
+  }
   scrollToBottom()
 }
 
@@ -271,6 +299,158 @@ function buildMockReply(prompt) {
   return `本地演示已收到：${prompt}\n\n${base}如果 BFF 已配置，我会把同一条消息以 postMessage 发送给 iframe/后端。`
 }
 
+function getAiToken() {
+  return localStorage.getItem('token') || ''
+}
+
+function buildAiHeaders() {
+  const headers = {
+    'Content-Type': 'application/json'
+  }
+
+  const token = getAiToken()
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+
+  return headers
+}
+
+function parseSseEventBlock(block) {
+  const rawLine = block
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line.startsWith('data:'))
+
+  if (!rawLine) return null
+  const data = rawLine.slice(5).trim()
+  if (!data) return null
+
+  try {
+    return JSON.parse(data)
+  } catch (error) {
+    return null
+  }
+}
+
+function tryRouteTarget(target) {
+  const routeTarget = buildRouteTarget(target)
+  if (!routeTarget) return
+  if (routeTarget.path) {
+    router.push({ path: routeTarget.path, query: routeTarget.query, params: routeTarget.params })
+    return
+  }
+  if (routeTarget.routeName) {
+    router.push({ name: routeTarget.routeName, query: routeTarget.query, params: routeTarget.params })
+  }
+}
+
+async function streamChatFromBff(message, assistantMessageId) {
+  const response = await fetch(`${configuredOrigin.value.replace(/\/$/, '')}/api/v1/agent/chat/stream`, {
+    method: 'POST',
+    headers: buildAiHeaders(),
+    body: JSON.stringify({
+      message,
+      context: buildAiHostSnapshot({
+        route: props.context?.route,
+        userInfo: props.context?.user || userInfo.value,
+        currentTab: props.context?.currentTab,
+        searchKeyword: props.context?.searchKeyword,
+        viewingNoteId: props.context?.viewingNoteId,
+        selectedWorkspaceId: props.context?.selectedWorkspaceId,
+        editingNotebookId: props.context?.editingNotebookId,
+        editingSpaceId: props.context?.editingSpaceId
+      }),
+      mode: 'local'
+    }),
+    signal: streamAbortController?.signal
+  })
+
+  if (!response.ok) {
+    throw new Error(`BFF ${response.status}`)
+  }
+
+  if (!response.body) {
+    const data = await response.json()
+    return data
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let finalResult = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const blocks = buffer.split('\n\n')
+    buffer = blocks.pop() || ''
+
+    for (const block of blocks) {
+      const evt = parseSseEventBlock(block)
+      if (!evt) continue
+
+      if (evt.delta) {
+        const current = messages.value.find(item => item.id === assistantMessageId)
+        updateAssistantMessage(assistantMessageId, {
+          content: `${current?.content || ''}${evt.delta}`,
+          source: 'BFF'
+        })
+      }
+
+      if (evt.done) {
+        finalResult = evt
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const evt = parseSseEventBlock(buffer)
+    if (evt && evt.delta) {
+      const current = messages.value.find(item => item.id === assistantMessageId)
+      updateAssistantMessage(assistantMessageId, {
+        content: `${current?.content || ''}${evt.delta}`,
+        source: 'BFF'
+      })
+    }
+    if (evt && evt.done) {
+      finalResult = evt
+    }
+  }
+
+  return finalResult || {
+    answer: messages.value.find(item => item.id === assistantMessageId)?.content || '',
+    citations: [],
+    route: null
+  }
+}
+
+function finalizeAssistantMessage(assistantMessageId, result, fallbackSource = 'BFF') {
+  if (!assistantMessageId) return
+  const existing = messages.value.find(item => item.id === assistantMessageId)
+  if (!existing) return
+
+  updateAssistantMessage(assistantMessageId, {
+    content: result?.answer || existing.content || '',
+    source: fallbackSource,
+    citations: result?.citations || existing.citations || [],
+    route: result?.route || existing.route || null
+  })
+
+  if (result?.route) {
+    tryRouteTarget(result.route)
+  }
+}
+
+async function sendToBff(message, assistantMessageId) {
+  const result = await streamChatFromBff(message, assistantMessageId)
+  finalizeAssistantMessage(assistantMessageId, result, 'BFF')
+}
+
 function syncContextToFrame() {
   if (!aiEnabled.value || activeMode.value !== 'iframe') {
     return
@@ -307,6 +487,11 @@ function closePanel() {
 }
 
 function clearMessages() {
+  if (streamAbortController) {
+    streamAbortController.abort()
+    streamAbortController = null
+  }
+  isStreaming.value = false
   messages.value = []
 }
 
@@ -315,7 +500,7 @@ function suggestDraft() {
 }
 
 function triggerQuickAction(action) {
-  if (!aiEnabled.value) {
+  if (!aiEnabled.value || isStreaming.value) {
     return
   }
 
@@ -323,7 +508,15 @@ function triggerQuickAction(action) {
   sendMessage()
 }
 
-function sendMessage() {
+async function sendMessage() {
+  if (isStreaming.value) {
+    if (streamAbortController) {
+      streamAbortController.abort()
+    }
+    isStreaming.value = false
+    return
+  }
+
   const content = draft.value.trim()
   if (!content || !aiEnabled.value) {
     return
@@ -332,33 +525,30 @@ function sendMessage() {
   appendMessage('user', content)
   draft.value = ''
 
-  if (activeMode.value === 'iframe' && shellUrl.value) {
-    const frame = shellFrameRef.value
-    if (frame && frame.contentWindow) {
-      frame.contentWindow.postMessage(
-        {
-          version: AI_PROTOCOL_VERSION,
-          type: AI_MESSAGE_TYPES.CHAT,
-          payload: {
-            message: content,
-            context: buildAiHostSnapshot({
-              route: props.context?.route,
-              userInfo: props.context?.user || userInfo.value,
-              currentTab: props.context?.currentTab,
-              searchKeyword: props.context?.searchKeyword,
-              viewingNoteId: props.context?.viewingNoteId,
-              selectedWorkspaceId: props.context?.selectedWorkspaceId,
-              editingNotebookId: props.context?.editingNotebookId,
-              editingSpaceId: props.context?.editingSpaceId
-            })
-          }
-        },
-        getAiTargetOrigin()
-      )
-    }
-  }
+  const assistantMessageId = appendAssistantMessage('BFF')
+  streamAbortController = new AbortController()
+  isStreaming.value = true
 
-  appendMessage('assistant', buildMockReply(content))
+  try {
+    await sendToBff(content, assistantMessageId)
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      updateAssistantMessage(assistantMessageId, {
+        content: '已中断本次生成。',
+        source: '本地'
+      })
+      return
+    }
+
+    const fallback = buildMockReply(content)
+    updateAssistantMessage(assistantMessageId, {
+      content: fallback,
+      source: '本地'
+    })
+  } finally {
+    streamAbortController = null
+    isStreaming.value = false
+  }
 }
 
 function switchToIframe() {
