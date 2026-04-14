@@ -40,6 +40,10 @@
           <span class="icon">+</span> 提问
         </button>
 
+        <button class="ask-button ai-open-button" type="button" @click="toggleAiAssistantPanel">
+          <span class="icon">AI</span> AI 助手
+        </button>
+
         <div class="action-icon-wrapper message-wrapper" @click="togglePrivateMessagePanel">
           <img
               src="/assets/icons/icon-private-message.svg"
@@ -214,6 +218,11 @@
       v-model:visible="showPrivateMessagePanel"
       @unread-updated="handleUnreadUpdated"
     />
+
+    <AiAssistantPanel
+      v-model:visible="showAiAssistantPanel"
+      :context="aiHostContext"
+    />
   </div>
 </template>
 
@@ -233,10 +242,12 @@ import QADetailView from '../components/user/QADetailView.vue'
 import FollowListView from '../components/user/FollowListView.vue'
 import UserNotesView from '../components/user/UserNotesView.vue'
 import PrivateMessagePanel from '../components/user/PrivateMessagePanel.vue'
+import AiAssistantPanel from '../components/agent/AiAssistantPanel.vue'
 import { useRouter, useRoute } from 'vue-router'
 import service from '../api/request'
 import { useUserStore } from '@/stores/user'
 import { storeToRefs } from 'pinia'
+import { buildAiHostSnapshot } from '@/utils/aiProtocol'
 import { fetchUnreadTotal as fetchConversationUnreadTotal } from '@/api/conversation'
 import {
   fetchNotifications,
@@ -265,6 +276,8 @@ const currentUserId = computed(() => userInfo.value?.id)
 const showPrivateMessagePanel = ref(false)
 const privateMessageUnreadTotal = ref(0)
 let privateMessageTimer = null
+
+const showAiAssistantPanel = ref(localStorage.getItem('folio.ai.panel.open') === 'true')
 
 // 通知面板 & 未读数
 const showNotificationPanel = ref(false)
@@ -484,6 +497,17 @@ const tabs = [
   { value: 'circle', label: '问答', desc: 'Q&A' },
   { value: 'workspace', label: '我的笔记', desc: 'WorkspaceView' }
 ]
+
+const aiHostContext = computed(() => buildAiHostSnapshot({
+  route,
+  userInfo: userInfo.value,
+  currentTab: currentTab.value,
+  searchKeyword: searchKeyword.value,
+  viewingNoteId: viewingNoteId.value,
+  selectedWorkspaceId: selectedWorkspaceId.value,
+  editingNotebookId: editingNotebookId.value,
+  editingSpaceId: editingSpaceId.value
+}))
 
 // 搜索相关状态
 const searchKeyword = ref('')
@@ -906,6 +930,11 @@ const goToProfile = () => {
   currentTab.value = 'profile'
 }
 
+const toggleAiAssistantPanel = () => {
+  showAiAssistantPanel.value = !showAiAssistantPanel.value
+  localStorage.setItem('folio.ai.panel.open', String(showAiAssistantPanel.value))
+}
+
 // 处理提问按钮，跳转问答并弹出提问框
 const handleAskClick = () => {
   currentTab.value = 'circle'
@@ -1123,6 +1152,10 @@ onBeforeUnmount(() => {
     clearInterval(notificationTimer)
     notificationTimer = null
   }
+})
+
+watch(showAiAssistantPanel, (value) => {
+  localStorage.setItem('folio.ai.panel.open', String(value))
 })
 
 // --- 结束新增 ---
