@@ -92,6 +92,7 @@
             @close="handleCloseEditor"
             @note-selected="handleNoteSelected"
             @ai-context-updated="handleAiContextUpdated"
+            @open-ai-assistant="showAiAssistantPanel = true"
         />
       </section>
 
@@ -275,6 +276,21 @@ const userAvatarUrl = computed(() => {
 // 当前用户ID
 const currentUserId = computed(() => userInfo.value?.id)
 const aiResourceContext = ref(null)
+
+const getAiPageMode = () => {
+  const resourceKind = String(aiResourceContext.value?.kind || '').toLowerCase()
+  if (currentTab.value === 'workspace' && (resourceKind === 'note-editor' || editingNotebookId.value || aiResourceContext.value?.status === 'editing')) {
+    return 'edit'
+  }
+
+  if (currentTab.value === 'note-detail' || currentTab.value === 'qa-detail') {
+    return 'view'
+  }
+
+  return 'browse'
+}
+
+const canAccessAiWriteActions = () => getAiPageMode() === 'edit'
 
 // 私信面板控制与未读数
 const showPrivateMessagePanel = ref(false)
@@ -506,12 +522,17 @@ const aiHostContext = computed(() => buildAiHostSnapshot({
   route,
   userInfo: userInfo.value,
   currentTab: currentTab.value,
+  pageMode: getAiPageMode(),
   searchKeyword: searchKeyword.value,
   viewingNoteId: viewingNoteId.value,
   selectedWorkspaceId: selectedWorkspaceId.value,
   editingNotebookId: editingNotebookId.value,
   editingSpaceId: editingSpaceId.value,
-  resource: aiResourceContext.value
+  resource: aiResourceContext.value,
+  authToken: localStorage.getItem('token') || '',
+  permissions: {
+    canAccessWriteActions: canAccessAiWriteActions()
+  }
 }))
 
 // 搜索相关状态

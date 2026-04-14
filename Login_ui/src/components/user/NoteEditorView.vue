@@ -120,6 +120,31 @@
           </div>
         </header>
 
+        <div v-if="aiRewriteStatus.visible" class="ai-rewrite-banner">
+          <div class="ai-rewrite-banner-text">
+            <strong>{{ aiRewriteStatus.title }}</strong>
+            <span>{{ aiRewriteStatus.detail }}</span>
+          </div>
+          <div class="ai-rewrite-banner-actions">
+            <button
+              type="button"
+              class="ai-rewrite-banner-btn"
+              :disabled="aiRewriteBusy || !canUndoLastAiRewrite"
+              @click="undoLastAiRewrite"
+            >
+              撤销本次改写
+            </button>
+            <button
+              type="button"
+              class="ai-rewrite-banner-btn secondary"
+              :disabled="aiRewriteBusy"
+              @click="emit('open-ai-assistant')"
+            >
+              继续优化
+            </button>
+          </div>
+        </div>
+
         <div v-if="!editor" class="loading-state">编辑器加载中...</div>
 
         <div v-else class="tiptap-wrapper" style="position: relative;">
@@ -433,7 +458,7 @@
 </template>
 
 <script setup>
-import { ref, onBeforeUnmount, nextTick, onMounted } from 'vue';
+import { ref, computed, onBeforeUnmount, nextTick, onMounted } from 'vue';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 
 // 核心扩展导入
@@ -448,6 +473,8 @@ import { debounce } from 'lodash-es';
 import VuePdfEmbed from 'vue-pdf-embed'
 import MarkdownIt from 'markdown-it';
 import { ResizableImage } from '@/extensions/ResizableImage';
+import { buildAiRequestContext, postAiJson } from '@/api/ai'
+import { useUserStore } from '@/stores/user'
 
 
 // 引入真实的 API 接口
@@ -476,7 +503,8 @@ const props = defineProps({
   notebookList: Array,
   initialNoteId: Number  // 初始选中的笔记ID
 });
-const emit = defineEmits(['close', 'note-selected', 'ai-context-updated']);
+const emit = defineEmits(['close', 'note-selected', 'ai-context-updated', 'open-ai-assistant']);
+const userStore = useUserStore()
 
 const getSelectedTextFromEditor = (editorInstance) => {
   if (!editorInstance || !editorInstance.state || !editorInstance.state.selection) {
@@ -527,6 +555,16 @@ const moderationCheckResult = ref(null);
 
 // 笔记是否在审核中
 const isNoteUnderModerationRef = ref(false);
+
+const aiRewriteBusy = ref(false)
+const aiRewriteSnapshots = ref([])
+const aiRewriteStatus = ref({
+  visible: false,
+  title: '',
+  detail: '',
+  progress: 0,
+  total: 0
+})
 
 // 风险等级结果对话框状态
 const riskResultDialog = ref({
@@ -608,6 +646,328 @@ const scheduleAiContextUpdate = (reason = 'editor') => {
   aiContextEmitTimer = setTimeout(() => {
     emitAiContextUpdate(reason)
   }, 250)
+}
+
+const canUndoLastAiRewrite = computed(() => aiRewriteSnapshots.value.length > 0)
+
+const normalizeAiRewriteOutput = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+
+  const stripped = raw
+    .replace(/^```(?:html|markdown|md)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim()
+
+  if (!stripped) return ''
+
+  if (/<[a-z][\s\S]*>/i.test(stripped)) {
+    return stripped
+  }
+
+  return mdParser.render(stripped)
+}
+
+const buildAiRewriteContext = (fragmentPreview, fragmentTitle) => buildAiRequestContext(
+  {
+    kind: 'note-editor',
+    id: currentNote.value?.id || null,
+    noteId: currentNote.value?.id || null,
+    notebookId: currentNote.value?.notebookId || props.notebookId || null,
+    spaceId: props.spaceId || null,
+    title: currentTitle.value || currentNote.value?.title || '无标题笔记',
+    fileType: currentNoteType.value || currentNote.value?.fileType || null,
+    contentPreview: fragmentPreview,
+    contentLength: fragmentPreview.length,
+    fragmentTitle: fragmentTitle || null,
+    updatedAt: currentNote.value?.updatedAt || null
+  },
+  {
+    page: {
+      tab: 'workspace',
+      mode: 'edit',
+      editingNotebookId: props.notebookId || null,
+      editingSpaceId: props.spaceId || null
+    },
+    user: {
+      id: userStore.userInfo?.id || null,
+      username: userStore.userInfo?.username || null,
+      role: userStore.userInfo?.role || null
+    },
+    permissions: {
+      canAccessWriteActions: true
+    }
+  }
+)
+
+const captureAiRewriteSnapshot = () => ({
+  html: editor.value?.getHTML() || '',
+  markdown: editor.value ? turndownService.turndown(editor.value.getHTML()) : (currentNote.value?.content || ''),
+  title: currentTitle.value || '',
+  noteId: currentNote.value?.id || null,
+  updatedAt: currentNote.value?.updatedAt || null
+})
+
+const showAiRewriteStatus = (title, detail, progress = 0, total = 0) => {
+  aiRewriteStatus.value = {
+    visible: true,
+    title,
+    detail,
+    progress,
+    total
+  }
+}
+
+const clearAiRewriteStatus = (hideBanner = false) => {
+  if (hideBanner) {
+    aiRewriteStatus.value = {
+      visible: false,
+      title: '',
+      detail: '',
+      progress: 0,
+      total: 0
+    }
+    return
+  }
+
+  aiRewriteStatus.value = {
+    ...aiRewriteStatus.value,
+    visible: aiRewriteSnapshots.value.length > 0
+  }
+}
+
+const resetAiRewriteSession = () => {
+  aiRewriteBusy.value = false
+  aiRewriteSnapshots.value = []
+  clearAiRewriteStatus(true)
+}
+
+const applyHtmlToEditor = (html) => {
+  if (!editor.value) return false
+  editor.value.commands.setContent(html, false)
+  currentNote.value.content = turndownService.turndown(html)
+  scheduleAiContextUpdate('ai-rewrite')
+  nextTick(() => {
+    safeEditorFocus(() => {
+      editor.value?.commands.focus('end')
+    })
+  })
+  return true
+}
+
+const replaceSelectionWithHtml = (html) => {
+  if (!editor.value) return false
+  const selection = editor.value.state?.selection
+  if (!selection || selection.empty) return false
+
+  editor.value.chain().focus().insertContentAt(
+    { from: selection.from, to: selection.to },
+    html
+  ).run()
+  currentNote.value.content = turndownService.turndown(editor.value.getHTML())
+  scheduleAiContextUpdate('ai-rewrite')
+  nextTick(() => {
+    safeEditorFocus(() => {
+      editor.value?.commands.focus('end')
+    })
+  })
+  return true
+}
+
+const getRewriteFragments = (html, limit = 1200) => {
+  if (typeof document === 'undefined') {
+    return [{ html, textLength: extractPlainText(html).length }]
+  }
+
+  const container = document.createElement('div')
+  container.innerHTML = html
+  const nodes = Array.from(container.childNodes)
+  const fragments = []
+  let current = []
+  let currentLength = 0
+
+  const flush = () => {
+    if (!current.length) return
+    fragments.push({
+      html: current.map(item => item.html).join(''),
+      textLength: current.reduce((sum, item) => sum + item.textLength, 0)
+    })
+    current = []
+    currentLength = 0
+  }
+
+  nodes.forEach((node) => {
+    const htmlText = node.nodeType === Node.TEXT_NODE
+      ? (node.textContent || '').trim()
+      : node.outerHTML
+
+    if (!htmlText) return
+
+    const textLength = extractPlainText(htmlText).length || htmlText.length
+    if (current.length && currentLength + textLength > limit) {
+      flush()
+    }
+
+    current.push({
+      html: htmlText,
+      textLength
+    })
+    currentLength += textLength
+  })
+
+  flush()
+  return fragments.length ? fragments : [{ html, textLength: extractPlainText(html).length }]
+}
+
+const rewritePlainTextScope = async (text, instruction) => {
+  const prompt = [
+    '你是笔记编辑器内的润色助手。',
+    '请仅润色下面这段文本，保持原意，提升表达的清晰度、顺畅度和专业度。',
+    '只返回纯文本，不要解释，不要加序号，不要使用 Markdown。',
+    instruction ? `额外要求：${instruction}` : '',
+    '文本：',
+    text
+  ].filter(Boolean).join('\n')
+
+  const data = await postAiJson('/api/v1/agent/chat', {
+    message: prompt,
+    context: buildAiRewriteContext(text.slice(0, 240), 'selection')
+  })
+
+  return String(data.answer || '').trim()
+}
+
+const rewriteHtmlScope = async (html, instruction) => {
+  const fragments = getRewriteFragments(html)
+  const rewrittenFragments = []
+
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = fragments[index]
+    showAiRewriteStatus(
+      'AI 改写中',
+      `正在润色第 ${index + 1} / ${fragments.length} 段`,
+      index + 1,
+      fragments.length
+    )
+
+    const prompt = [
+      '你在一个富文本编辑器里工作。',
+      '请对下面这段 HTML 富文本进行润色，保持原有 HTML 标签结构、段落顺序和信息完整性，只输出可直接替换的 HTML 片段，不要解释，不要使用 Markdown。',
+      '如果需要，可以微调表达、连接句和标题措辞，但不要丢失内容。',
+      instruction ? `额外要求：${instruction}` : '',
+      `第 ${index + 1} / ${fragments.length} 段内容：`,
+      fragment.html
+    ].filter(Boolean).join('\n')
+
+    const data = await postAiJson('/api/v1/agent/chat', {
+      message: prompt,
+      context: buildAiRewriteContext(fragment.html.slice(0, 240), `fragment-${index + 1}`)
+    })
+
+    const normalized = normalizeAiRewriteOutput(data.answer || '')
+    if (!normalized) {
+      throw new Error(`第 ${index + 1} 段未返回可用内容`)
+    }
+
+    rewrittenFragments.push(normalized)
+  }
+
+  return rewrittenFragments.join('')
+}
+
+const applyAiRewriteRequest = async (request = {}) => {
+  if (!currentNote.value || currentNoteType.value !== 'md' || !editor.value) {
+    return { ok: false, reason: 'editor_unavailable' }
+  }
+
+  if (isNoteUnderModerationRef.value) {
+    return { ok: false, reason: 'moderating' }
+  }
+
+  if (aiRewriteBusy.value) {
+    return { ok: false, reason: 'rewrite_in_progress' }
+  }
+
+  const instruction = String(request.prompt || request.instruction || '').trim() || '请润色当前内容'
+  const selectedText = getSelectedTextFromEditor(editor.value)
+  const useSelection = Boolean(selectedText) && !/(全文|整篇|整段|整篇文章|整页|整篇笔记)/.test(instruction)
+  const snapshot = captureAiRewriteSnapshot()
+
+  aiRewriteBusy.value = true
+  try {
+    aiRewriteSnapshots.value.push(snapshot)
+    const nextHtml = useSelection
+      ? mdParser.render(await rewritePlainTextScope(selectedText, instruction))
+      : await rewriteHtmlScope(snapshot.html, instruction)
+
+    if (!nextHtml) {
+      throw new Error('AI 未返回可应用的改写结果')
+    }
+
+    const applied = useSelection
+      ? replaceSelectionWithHtml(nextHtml)
+      : applyHtmlToEditor(nextHtml)
+
+    if (!applied) {
+      throw new Error('AI 改写结果无法写入当前编辑器')
+    }
+    showAiRewriteStatus(
+      'AI 改写已应用',
+      '内容已经写回当前工作区。你可以撤销这次改写，或者继续用更具体的要求再润色一次。',
+      1,
+      1
+    )
+    emitAiContextUpdate('ai-rewrite-applied')
+    showSuccess('AI 改写已应用到当前工作区')
+    return {
+      ok: true,
+      applied: true,
+      scope: useSelection ? 'selection' : 'document',
+      summary: 'AI 改写已应用到当前工作区'
+    }
+  } catch (error) {
+    aiRewriteSnapshots.value.pop()
+    aiRewriteStatus.value = {
+      visible: true,
+      title: 'AI 改写失败',
+      detail: error?.message || '请稍后重试',
+      progress: 0,
+      total: 0
+    }
+    showError(error?.message || 'AI 改写失败，请稍后重试')
+    return { ok: false, reason: error?.message || 'rewrite_failed' }
+  } finally {
+    aiRewriteBusy.value = false
+  }
+}
+
+const undoLastAiRewrite = () => {
+  const snapshot = aiRewriteSnapshots.value.pop()
+  if (!snapshot) {
+    showInfo('没有可撤销的 AI 改写')
+    clearAiRewriteStatus(true)
+    return false
+  }
+
+  if (editor.value) {
+    editor.value.commands.setContent(snapshot.html, false)
+  }
+  if (currentNote.value) {
+    currentNote.value.content = snapshot.markdown
+  }
+  currentTitle.value = snapshot.title || currentTitle.value
+  scheduleAiContextUpdate('ai-rewrite-undone')
+  showAiRewriteStatus(
+    '已撤销本次改写',
+    aiRewriteSnapshots.value.length ? '你还可以继续撤销更早的一次 AI 改写。' : '你可以重新使用 AI 助手继续润色当前内容。',
+    0,
+    0
+  )
+  if (!aiRewriteSnapshots.value.length) {
+    clearAiRewriteStatus(true)
+  }
+  showSuccess('已撤销本次 AI 改写')
+  return true
 }
 
 // 2. 初始化 Turndown 服务 (HTML -> MD)
@@ -1131,8 +1491,46 @@ const fetchNotes = async (sortBy = 'updatedAt') => {
 };
 
 // ----------------- 生命周期 -----------------
+const handleAiRewriteRequestEvent = async (event) => {
+  const detail = event?.detail
+  if (!detail?.requestId) return
+
+  try {
+    const payload = {
+      prompt: detail.prompt || detail.instruction || '',
+      instruction: detail.instruction || detail.prompt || ''
+    }
+
+    const result = await applyAiRewriteRequest(payload)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('folio-ai-rewrite-result', {
+        detail: {
+          requestId: detail.requestId,
+          ok: Boolean(result?.ok),
+          result,
+          error: result?.ok ? null : (result?.reason || 'rewrite_failed')
+        }
+      }))
+    }
+  } catch (error) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('folio-ai-rewrite-result', {
+        detail: {
+          requestId: detail.requestId,
+          ok: false,
+          result: null,
+          error: error?.message || 'rewrite_failed'
+        }
+      }))
+    }
+  }
+}
+
 onMounted(() => {
   fetchNotes();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('folio-ai-rewrite-request', handleAiRewriteRequestEvent)
+  }
 });
 
 onBeforeUnmount(() => {
@@ -1140,6 +1538,9 @@ onBeforeUnmount(() => {
   if (aiContextEmitTimer) {
     clearTimeout(aiContextEmitTimer);
     aiContextEmitTimer = null;
+  }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('folio-ai-rewrite-request', handleAiRewriteRequestEvent)
   }
 });
 
@@ -1354,6 +1755,7 @@ const selectNote = async (note) => {
   currentTitle.value = note.title;
   currentNoteType.value = note.fileType;
   pdfPreviewUrl.value = null;
+  resetAiRewriteSession()
   
   // 检查笔记是否在审核中
   isNoteUnderModerationRef.value = await isNoteUnderModeration(note.id);
@@ -2301,6 +2703,63 @@ const isNoteUnderModeration = async (noteId) => {
   justify-content: space-between;
   align-items: center;
   background: #fff;
+}
+
+.ai-rewrite-banner {
+  margin: 12px 30px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(76, 124, 255, 0.16);
+  background: linear-gradient(180deg, rgba(76, 124, 255, 0.08), rgba(255, 255, 255, 0.98));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ai-rewrite-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-rewrite-banner-text strong {
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.ai-rewrite-banner-text span {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.ai-rewrite-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ai-rewrite-banner-btn {
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(76, 124, 255, 0.2);
+  background: #4c7cff;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ai-rewrite-banner-btn.secondary {
+  background: #fff;
+  color: #4c7cff;
+}
+
+.ai-rewrite-banner-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .title-input {

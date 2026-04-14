@@ -48,13 +48,15 @@ export function buildAiHostSnapshot({
   route,
   userInfo,
   currentTab,
+  pageMode,
   searchKeyword,
   viewingNoteId,
   selectedWorkspaceId,
   editingNotebookId,
   editingSpaceId,
   resource,
-  authToken
+  authToken,
+  permissions
 }) {
   return {
     version: AI_PROTOCOL_VERSION,
@@ -66,6 +68,7 @@ export function buildAiHostSnapshot({
     },
     page: {
       tab: currentTab || null,
+      mode: pageMode || null,
       searchKeyword: searchKeyword || null,
       viewingNoteId: viewingNoteId || null,
       selectedWorkspaceId: selectedWorkspaceId || null,
@@ -102,7 +105,10 @@ export function buildAiHostSnapshot({
       role: userInfo?.role || null
     },
     permissions: {
-      canAccessWriteActions: userInfo?.role === 'Admin' || userInfo?.role === 'User'
+      canAccessWriteActions:
+        typeof permissions?.canAccessWriteActions === 'boolean'
+          ? permissions.canAccessWriteActions
+          : userInfo?.role === 'Admin' || userInfo?.role === 'User'
     }
   }
 }

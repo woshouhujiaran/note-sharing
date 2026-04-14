@@ -54,6 +54,56 @@ def _resource_label(resource: dict[str, Any], fallback: str = "当前内容") ->
     return str(resource.get("title") or fallback)
 
 
+def _page_mode(context: dict[str, Any]) -> str:
+    page = context.get("page")
+    if isinstance(page, dict):
+        value = page.get("mode") or page.get("pageMode")
+        if isinstance(value, str) and value.strip():
+          return value.strip().lower()
+    return ""
+
+
+def _permission_flags(context: dict[str, Any]) -> dict[str, Any]:
+    permissions = context.get("permissions")
+    if isinstance(permissions, dict):
+        return permissions
+    return {}
+
+
+def _is_write_intent(message: str) -> bool:
+    text = message.lower()
+    keywords = (
+        "改写",
+        "重写",
+        "修改",
+        "润色",
+        "重构",
+        "替换原文",
+        "直接写",
+        "帮我写",
+        "rewrite",
+        "revise",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _is_write_allowed(context: dict[str, Any]) -> bool:
+    permissions = _permission_flags(context)
+    return _page_mode(context) == "edit" and bool(permissions.get("canAccessWriteActions"))
+
+
+def _blocked_write_response(request: dict[str, Any]) -> str:
+    context = _get_context(request)
+    resource = _get_resource(context)
+    resource_title = _resource_label(resource)
+    page_mode = _page_mode(context)
+
+    if page_mode == "edit":
+        return f"当前可以给《{resource_title}》提供改写建议，但不会直接替你写回正文。请在编辑器里确认后再提交。"
+
+    return f"当前处于浏览态，不能直接改写《{resource_title}》。请进入编辑页后再进行改写。"
+
+
 def _extract_keywords(text: str) -> list[str]:
     raw_parts = [
         part.strip(" ,，。！？!?\n\t")
@@ -124,6 +174,7 @@ async def _collect_facts(state: AgentState, client: LoginApiClient) -> AgentStat
     resource_kind = str(resource.get("kind") or "").lower()
     resource_title = _resource_label(resource)
     resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 240)
+    page_mode = _page_mode(context)
 
     if resource_preview:
         facts.append(f"当前内容片段: 《{resource_title}》 {resource_preview}")
@@ -137,6 +188,8 @@ async def _collect_facts(state: AgentState, client: LoginApiClient) -> AgentStat
             facts.append("当前处于笔记查看态，反馈应聚焦摘要、观点和补充信息")
         elif resource_kind == "qa-detail":
             facts.append("当前处于问答查看态，反馈应聚焦问题清晰度和回答方向")
+    if page_mode:
+        facts.append(f"页面模式: {page_mode}")
 
     note_id = context.get("page", {}).get("viewingNoteId") or context.get("page", {}).get("noteId")
     if note_id:
@@ -330,11 +383,26 @@ class AgentRuntime:
         return builder.compile()
 
     async def run(self, request: ChatRequest, auth_token: str | None = None) -> dict[str, Any]:
-        state = await self._graph.ainvoke({"request": request.model_dump(), "auth_token": auth_token})
+        request_data = request.model_dump()
+        context = _get_context(request_data)
+        message = str(request_data.get("message") or "")
+
+        if _is_write_intent(message) and not _is_write_allowed(context):
+            return {
+                "answer": _blocked_write_response(request_data),
+                "citations": [],
+                "route": None,
+                "ai_generated": True,
+                "source": "policy",
+                "blocked": True,
+                "reason": "write_not_allowed",
+            }
+
+        state = await self._graph.ainvoke({"request": request_data, "auth_token": auth_token})
         answer = state.get("answer", "")
         if self._model_client.is_enabled:
             try:
-                system_prompt, user_prompt = _build_content_messages(request.model_dump(), state.get("facts", []))
+                system_prompt, user_prompt = _build_content_messages(request_data, state.get("facts", []))
                 answer = await self._model_client.chat(system_prompt, user_prompt)
             except Exception as exc:  # noqa: BLE001
                 answer = f"{answer}\n\n模型调用失败，已回退本地规则：{exc.__class__.__name__}"
@@ -344,6 +412,7 @@ class AgentRuntime:
             "route": state.get("route"),
             "ai_generated": True,
             "source": "openai-compatible" if self._model_client.is_enabled else "langgraph",
+            "blocked": False,
         }
 
     async def keywords(self, request: KeywordRequest, auth_token: str | None = None) -> dict[str, Any]:

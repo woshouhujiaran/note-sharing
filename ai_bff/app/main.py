@@ -55,7 +55,7 @@ def _stream_sse(data: dict[str, Any]):
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.02)
 
-        yield f"data: {json.dumps({'done': True, 'answer': answer, 'citations': data.get('citations', []), 'route': data.get('route')}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'done': True, 'answer': answer, 'citations': data.get('citations', []), 'route': data.get('route'), 'blocked': data.get('blocked', False), 'reason': data.get('reason')}, ensure_ascii=False)}\n\n"
 
     return generator()
 

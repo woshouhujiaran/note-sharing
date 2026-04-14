@@ -1,186 +1,79 @@
-﻿<template>
+<template>
   <transition name="ai-panel-fade">
-    <div v-if="visible" class="ai-panel-shell" :class="{ 'is-docked': panelPinned }">
+    <div v-if="visible" class="ai-panel-shell">
       <section class="ai-panel">
         <header class="ai-panel-header">
           <div class="ai-panel-title-group">
             <div class="ai-panel-title-row">
               <span class="ai-panel-title">AI 助手</span>
-              <span class="ai-panel-badge" :class="{ 'is-active': aiEnabled }">
-                {{ aiEnabled ? '已启用' : '已关闭' }}
-              </span>
+              <span class="ai-panel-badge">{{ pageModeLabel }}</span>
             </div>
-            <p class="ai-panel-subtitle">
-              宿主控制 ? {{ activeModeLabel }} ? {{ panelLayoutLabel }} ? {{ shellStatusLabel }}
-            </p>
+            <p class="ai-panel-subtitle">{{ contextSummary }}</p>
           </div>
 
-          <div class="ai-panel-actions">
-            <button type="button" class="ai-mode-button" :class="{ active: activeMode === 'local' }" @click="activeMode = 'local'">
-              本地演示
-            </button>
-            <button
-              type="button"
-              class="ai-mode-button"
-              :class="{ active: activeMode === 'iframe', disabled: !shellUrl }"
-              :disabled="!shellUrl"
-              @click="switchToIframe"
-            >
-              iframe 宿主
-            </button>
-            <button type="button" class="ai-mode-button" :class="{ active: panelPinned }" @click="togglePanelPinned">
-              {{ panelPinned ? '取消固定' : '固定侧栏' }}
-            </button>
-            <button type="button" class="ai-close-button" @click="closePanel">收起</button>
-          </div>
+          <button type="button" class="ai-close-button" @click="closePanel">收起</button>
         </header>
 
-        <div class="ai-panel-toolbar">
-          <label class="ai-toggle">
-            <input v-model="aiEnabled" type="checkbox" />
-            <span class="ai-toggle-track">
-              <span class="ai-toggle-thumb"></span>
-            </span>
-            <span class="ai-toggle-label">功能开关</span>
-          </label>
-
-          <button type="button" class="ai-secondary-button" @click="syncContextToFrame">
-            推送上下文
-          </button>
-          <button type="button" class="ai-secondary-button" @click="clearMessages">
-            清空会话
-          </button>
-        </div>
-
-        <div class="ai-connection-card" :class="connectionStatusClass">
-          <div class="ai-connection-main">
-            <span class="ai-connection-label">{{ connectionStatusLabel }}</span>
-            <span class="ai-connection-message">{{ connectionMessage }}</span>
-          </div>
-          <div class="ai-connection-meta">
-            <span class="ai-connection-origin">{{ configuredOrigin }}</span>
-            <span v-if="lastConnectionCheckAt" class="ai-connection-time">更新于 {{ lastConnectionCheckAt }}</span>
-          </div>
-          <button type="button" class="ai-secondary-button ai-connection-refresh" @click="refreshConnectionStatus">
-            重新检测
-          </button>
-        </div>
-
-        <div class="ai-quick-actions">
-          <button
-            v-for="action in quickActions"
-            :key="action.key"
-            type="button"
-            class="ai-chip"
-            @click="triggerQuickAction(action)"
-          >
-            {{ action.label }}
-          </button>
-        </div>
-
-        <div class="ai-context-card">
-          <div class="ai-context-title">当前上下文</div>
-          <div class="ai-context-grid">
-            <div class="ai-context-item">
-              <span class="label">页面</span>
-              <span class="value">{{ contextSummary.pageLabel }}</span>
-            </div>
-            <div class="ai-context-item">
-              <span class="label">路由</span>
-              <span class="value">{{ contextSummary.routeLabel }}</span>
-            </div>
-            <div class="ai-context-item">
-              <span class="label">资源</span>
-              <span class="value">{{ contextSummary.resourceLabel }}</span>
-            </div>
-            <div class="ai-context-item">
-              <span class="label">选区</span>
-              <span class="value">{{ contextSummary.selectedTextLabel }}</span>
-            </div>
-            <div class="ai-context-item">
-              <span class="label">角色</span>
-              <span class="value">{{ contextSummary.roleLabel }}</span>
-            </div>
+        <div v-if="suggestions.length" class="ai-suggestion-strip">
+          <div class="ai-suggestion-title">你可以直接问</div>
+          <div class="ai-suggestion-list">
+            <button
+              v-for="item in suggestions"
+              :key="item.key"
+              type="button"
+              class="ai-suggestion-chip"
+              @click="useSuggestion(item)"
+            >
+              {{ item.label }}
+            </button>
           </div>
         </div>
 
-        <div v-if="activeMode === 'iframe'" class="ai-frame-panel">
-          <div v-if="shellUrl" class="ai-frame-wrapper">
-            <iframe
-              ref="shellFrameRef"
-              class="ai-frame"
-              :src="shellUrl"
-              title="AI Assistant Shell"
-              sandbox="allow-scripts allow-forms"
-            ></iframe>
+        <div class="ai-chat-log" ref="logRef">
+          <div v-if="messages.length === 0" class="ai-empty-state">
+            <strong>纯净聊天框</strong>
+            <span>先点上方推荐词，或直接输入你的问题。</span>
           </div>
-          <div v-else class="ai-empty-state">
-            <strong>iframe 壳未配置</strong>
-            <span>请先设置 `VUE_APP_AI_BFF_ORIGIN` 后再启用 iframe 模式。</span>
-          </div>
-        </div>
 
-        <template v-else>
-          <div v-if="recentPrompts.length" class="ai-history-strip">
-            <span class="ai-history-label">最近提示</span>
-            <div class="ai-history-list">
-              <button
-                v-for="prompt in recentPrompts"
-                :key="prompt"
-                type="button"
-                class="ai-history-chip"
-                @click="retryPrompt(prompt)"
+          <article v-for="item in messages" :key="item.id" :class="['ai-message', item.role]">
+            <div class="ai-message-role">{{ item.roleLabel }}</div>
+            <div class="ai-message-content">{{ item.content }}</div>
+            <div v-if="item.citations && item.citations.length" class="ai-message-citations">
+              <span
+                v-for="citation in item.citations.slice(0, 3)"
+                :key="citation.noteId || citation.questionId || citation.url || citation.title"
+                class="ai-message-citation"
               >
-                {{ prompt }}
+                {{ citation.title || citation.url || citation.summary || '引用' }}
+              </span>
+            </div>
+            <div v-if="item.role === 'assistant' && item.prompt" class="ai-message-actions">
+              <button type="button" class="ai-message-action" @click="retryPrompt(item.prompt)">
+                重新生成
               </button>
             </div>
-          </div>
-
-          <div class="ai-chat-log" ref="logRef">
-            <article v-for="item in messages" :key="item.id" :class="['ai-message', item.role]">
-              <div class="ai-message-role">{{ item.roleLabel }}</div>
-              <div class="ai-message-content">{{ item.content }}</div>
-              <div v-if="item.citations && item.citations.length" class="ai-message-citations">
-                <span
-                  v-for="citation in item.citations.slice(0, 3)"
-                  :key="citation.noteId || citation.questionId || citation.url || citation.title"
-                  class="ai-message-citation"
-                >
-                  {{ citation.title || citation.url || citation.summary || '引用' }}
-                </span>
-              </div>
-              <div v-if="item.role === 'assistant' && item.prompt" class="ai-message-actions">
-                <button type="button" class="ai-message-action" @click="retryPrompt(item.prompt)">
-                  重新生成
-                </button>
-              </div>
-              <div class="ai-message-meta">
-                {{ item.timeLabel }}
-                <span v-if="item.source" class="ai-message-source">? {{ item.source }}</span>
-              </div>
-            </article>
-
-            <div v-if="messages.length === 0" class="ai-empty-state">
-              <strong>可用的稳定函数</strong>
-              <span>标题生成、当前页摘要、关键词抽取、相似问题提示，都会在本地模式下稳定返回。</span>
+            <div class="ai-message-meta">
+              {{ item.timeLabel }}
             </div>
-          </div>
+          </article>
+        </div>
 
-          <form class="ai-composer" @submit.prevent="sendMessage">
-            <textarea
-              v-model="draft"
-              class="ai-input"
-              rows="3"
-              placeholder="输入一句话，让 AI 基于当前页面帮你处理"
-            ></textarea>
-            <div class="ai-composer-actions">
-              <button type="button" class="ai-secondary-button" @click="draft = suggestDraft()">示例文本</button>
-              <button type="submit" class="ai-send-button" :disabled="(!draft.trim() && !isStreaming) || !aiEnabled">
-                {{ isStreaming ? '停止' : '发送' }}
-              </button>
-            </div>
-          </form>
-        </template>
+        <form class="ai-composer" @submit.prevent="sendMessage">
+          <textarea
+            v-model="draft"
+            class="ai-input"
+            rows="3"
+            placeholder="直接提问，AI 只会根据当前页面上下文回答"
+          ></textarea>
+          <div class="ai-composer-actions">
+            <button type="button" class="ai-secondary-button" :disabled="!messages.length && !draft" @click="clearMessages">
+              清空
+            </button>
+            <button type="submit" class="ai-send-button" :disabled="(!draft.trim() && !isStreaming) || !aiEnabled">
+              {{ isStreaming ? '停止' : '发送' }}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   </transition>
@@ -191,9 +84,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { AI_MESSAGE_TYPES, AI_PROTOCOL_VERSION, AI_STORAGE_KEYS, getAiBffOrigin, getAiShellUrl, getAiTargetOrigin, isValidAiOrigin } from '@/config/ai'
-import { probeAiBff } from '@/api/ai'
-import { buildAiHostSnapshot, buildRouteTarget, isAiHostMessage } from '@/utils/aiProtocol'
+import { getAiBffOrigin } from '@/config/ai'
+import { buildAiHostSnapshot, buildRouteTarget } from '@/utils/aiProtocol'
 
 const props = defineProps({
   visible: {
@@ -212,94 +104,120 @@ const router = useRouter()
 const userStore = useUserStore()
 const { userInfo } = storeToRefs(userStore)
 
-const aiEnabled = ref(localStorage.getItem(AI_STORAGE_KEYS.enabled) !== 'false')
-const activeMode = ref(localStorage.getItem(AI_STORAGE_KEYS.shellMode) || 'local')
-const panelPinned = ref(localStorage.getItem(AI_STORAGE_KEYS.panelPinned) === 'true')
+const aiEnabled = ref(true)
 const draft = ref('')
 const messages = ref([])
 const logRef = ref(null)
-const shellFrameRef = ref(null)
-const configuredOrigin = computed(() => getAiBffOrigin())
-const shellUrl = computed(() => (aiEnabled.value ? getAiShellUrl() : ''))
 const isStreaming = ref(false)
-const lastAutoAnalysisKey = ref('')
-const connectionState = ref('checking')
-const connectionMessage = ref('正在检测 BFF 连通性')
-const lastConnectionCheckAt = ref('')
+const streamAbortController = ref(null)
+const pendingRewriteRequests = new Map()
+
+const pageContext = computed(() => props.context || {})
+const resourceContext = computed(() => pageContext.value.resource || {})
+const currentTab = computed(() => pageContext.value.page?.tab || pageContext.value.currentTab || '')
+const pageMode = computed(() => {
+  const explicitMode = String(pageContext.value.page?.mode || '').toLowerCase()
+  if (explicitMode) {
+    return explicitMode
+  }
+
+  const resourceKind = String(resourceContext.value.kind || '').toLowerCase()
+  if (currentTab.value === 'workspace' && (resourceKind === 'note-editor' || pageContext.value.editingNotebookId || pageContext.value.editingSpaceId)) {
+    return 'edit'
+  }
+
+  if (currentTab.value === 'note-detail' || currentTab.value === 'qa-detail') {
+    return 'view'
+  }
+
+  return 'browse'
+})
+
+const pageModeLabel = computed(() => {
+  if (pageMode.value === 'edit') return '编辑态'
+  if (pageMode.value === 'view') return '浏览态'
+  return '浏览/搜索'
+})
 
 const contextSummary = computed(() => {
-  const ctx = props.context || {}
-  const resource = ctx.resource || {}
-  return {
-    pageLabel: ctx.pageLabel || ctx.currentTab || '未知页面',
-    routeLabel: ctx.route?.path || ctx.route?.name || '未知路由',
-    resourceLabel: resource.title
-      ? `${resource.kind || 'resource'} · ${resource.title}`
-      : ctx.viewingNoteId
-        ? `笔记 ${ctx.viewingNoteId}`
-        : ctx.selectedWorkspaceId
-          ? `空间 ${ctx.selectedWorkspaceId}`
-          : ctx.editingNotebookId
-            ? `笔记本 ${ctx.editingNotebookId}`
-            : '无',
-    selectedTextLabel: resource.selectedText ? resource.selectedText : '无选中文本',
-    roleLabel: ctx.user?.role || userInfo.value?.role || 'User'
-  }
-})
-const recentPrompts = computed(() => {
-  const prompts = []
-  const seen = new Set()
-  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
-    const item = messages.value[i]
-    if (item.role !== 'user' || !item.content) continue
-    const prompt = String(item.content).trim()
-    if (!prompt || seen.has(prompt)) continue
-    seen.add(prompt)
-    prompts.push(prompt)
-    if (prompts.length >= 5) break
-  }
-  return prompts
+  const resource = resourceContext.value || {}
+  const pageLabel = currentTab.value || 'unknown'
+  const resourceLabel = resource.title
+    ? `${resource.kind || 'resource'} · ${resource.title}`
+    : pageContext.value.searchKeyword
+      ? `关键词 · ${pageContext.value.searchKeyword}`
+      : resource.noteId
+        ? `笔记 ${resource.noteId}`
+        : resource.questionId
+          ? `问答 ${resource.questionId}`
+          : '无资源'
+
+  return `${pageLabel} · ${resourceLabel}`
 })
 
-const activeModeLabel = computed(() => (activeMode.value === 'iframe' ? 'iframe 宿主' : '本地演示'))
-const panelLayoutLabel = computed(() => (panelPinned.value ? '固定侧栏' : '浮窗模式'))
-const shellStatusLabel = computed(() => (configuredOrigin.value ? 'BFF 已配置' : 'BFF 未配置'))
-const connectionStatusLabel = computed(() => {
-  if (connectionState.value === 'online') {
-    return 'BFF 在线'
+const suggestions = computed(() => {
+  const resource = resourceContext.value || {}
+  const title = resource.title || pageContext.value.page?.label || pageContext.value.searchKeyword || '当前内容'
+  const searchKeyword = pageContext.value.searchKeyword || '当前关键词'
+  const hotTopic = pageContext.value.searchKeyword || resource.title || '当前最热内容'
+  const selectedText = String(resource.selectedText || '').trim()
+
+  if (pageMode.value === 'edit') {
+    const rewritePrompt = selectedText
+      ? `请改写我当前选中的这段文本，保持原意但让表达更清晰：${selectedText}`
+      : `请改写我正在编辑的这篇笔记《${title}》中的内容，保持原意并提升表达。`
+    return [
+      { key: 'rewrite', label: '改写这段', prompt: rewritePrompt },
+      { key: 'title', label: '起标题', prompt: `请根据我正在编辑的笔记《${title}》生成 3 个标题候选，并说明各自适合的场景。` },
+      { key: 'outline', label: '生成提纲', prompt: `请把我正在编辑的笔记《${title}》整理成一个清晰的层级提纲。` },
+      { key: 'evidence', label: '补充论据', prompt: `请为我正在编辑的笔记《${title}》补充可引用的论据、例子或待验证点。` }
+    ]
   }
-  if (connectionState.value === 'offline') {
-    return 'BFF 离线'
+
+  if (currentTab.value === 'note-detail') {
+    return [
+      { key: 'summary', label: '总结', prompt: `请总结当前笔记《${title}》，先给核心观点，再给 3 条可执行建议。` },
+      { key: 'keywords', label: '提炼关键词', prompt: `请提炼当前笔记《${title}》的关键词，并按重要性排序。` },
+      { key: 'similar', label: '寻找相似文章', prompt: `请根据当前笔记《${title}》寻找相似文章或相近主题的笔记，并说明相似点。` },
+      { key: 'logic', label: '指出漏洞', prompt: `请指出当前笔记《${title}》可能存在的逻辑漏洞、缺失信息或表达不清的地方。` }
+    ]
   }
-  return 'BFF 检测中'
-})
-const connectionStatusClass = computed(() => ({
-  online: connectionState.value === 'online',
-  offline: connectionState.value === 'offline',
-  checking: connectionState.value === 'checking'
-}))
 
+  if (currentTab.value === 'qa-detail') {
+    return [
+      { key: 'summary', label: '总结', prompt: `请总结当前问答《${title}》，梳理问题、答案和讨论结论。` },
+      { key: 'answer', label: '回答思路', prompt: `请基于当前问答《${title}》给出一个更清晰的回答思路，分点说明。` },
+      { key: 'similar', label: '相似问题', prompt: `请根据当前问答《${title}》找相似问题，并说明为什么相关。` },
+      { key: 'followup', label: '补充追问', prompt: `请围绕当前问答《${title}》给出 3 个高质量追问，帮助补全上下文。` }
+    ]
+  }
 
+  if (currentTab.value === 'search') {
+    return [
+      { key: 'narrow', label: '缩小范围', prompt: `请基于我当前的搜索词“${searchKeyword}”帮我缩小搜索范围，给出更准确的检索方向。` },
+      { key: 'related', label: '找更相关的笔记', prompt: `请围绕搜索词“${searchKeyword}”给我找更相关的笔记，并说明筛选理由。` },
+      { key: 'next', label: '换个关键词', prompt: `请基于搜索词“${searchKeyword}”推荐 3 个更适合继续搜索的关键词。` }
+    ]
+  }
 
-
-const quickActions = computed(() => {
-  const actions = [
-    { key: 'title', label: '生成标题', prompt: '请根据当前页面内容生成三个标题候选。' },
-    { key: 'summary', label: '总结当前页', prompt: '请总结当前页面上下文，并给出下一步建议。' },
-    { key: 'keywords', label: '提炼关键词', prompt: '请抽取当前页面的关键词，并按重要性排序。' },
-    { key: 'similar', label: '相似问题', prompt: '请给出当前页面相关的相似问题提示。' }
+  return [
+    { key: 'hot-note', label: '查相关笔记', prompt: `请帮我查有关“${hotTopic}”的笔记，并按相关度列出最值得看的 3 条。` },
+    { key: 'hot-qa', label: '找相关问答', prompt: `请帮我找和“${hotTopic}”相关的问答，并说明每条为什么相关。` },
+    { key: 'hot-explain', label: '解释热词', prompt: `请解释“${hotTopic}”相关内容，并给出适合继续追问的方向。` }
   ]
-
-  return actions
 })
 
-let frameMessageHandler = null
-let aiContextTimer = null
-let streamAbortController = null
-let connectionTimer = null
+let requestSeq = 0
 
 function nowLabel() {
   return new Date().toLocaleTimeString()
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (!logRef.value) return
+    logRef.value.scrollTop = logRef.value.scrollHeight
+  })
 }
 
 function appendMessage(role, content, extra = {}) {
@@ -315,25 +233,21 @@ function appendMessage(role, content, extra = {}) {
   scrollToBottom()
 }
 
-function formatClockLabel(date = new Date()) {
-  return date.toLocaleTimeString()
-}
-
-function appendAssistantMessage(source = 'BFF', prompt = '') {
-  const item = {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+function appendAssistantMessage(prompt = '') {
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  messages.value.push({
+    id,
     role: 'assistant',
     roleLabel: 'AI',
     content: '',
     timeLabel: nowLabel(),
-    source,
+    source: 'BFF',
     prompt,
     citations: [],
     route: null
-  }
-  messages.value.push(item)
+  })
   scrollToBottom()
-  return item.id
+  return id
 }
 
 function updateAssistantMessage(messageId, patch = {}) {
@@ -345,186 +259,6 @@ function updateAssistantMessage(messageId, patch = {}) {
   }
   scrollToBottom()
 }
-
-function scrollToBottom() {
-  nextTick(() => {
-    if (!logRef.value) return
-    logRef.value.scrollTop = logRef.value.scrollHeight
-  })
-}
-
-function summarizeContext() {
-  const ctx = props.context || {}
-  const routePath = ctx.route?.path || '未知路由'
-  const tab = ctx.currentTab || ctx.page?.tab || '未知标签'
-  const noteId = ctx.viewingNoteId ? String(ctx.viewingNoteId) : '无'
-  const workspace = ctx.selectedWorkspaceId ? String(ctx.selectedWorkspaceId) : '无'
-  const role = ctx.user?.role || userInfo.value?.role || 'User'
-
-  return `当前页面是 ${tab}，路由是 ${routePath}，笔记 ID ${noteId}，空间 ID ${workspace}，用户角色 ${role}。`
-}
-
-async function refreshConnectionStatus() {
-  connectionState.value = 'checking'
-  connectionMessage.value = '正在检查 BFF 连通性'
-
-  try {
-    const health = await probeAiBff()
-    connectionState.value = 'online'
-    connectionMessage.value = health?.service ? `${health.service} 可用` : 'BFF 可用'
-  } catch (error) {
-    connectionState.value = 'offline'
-    connectionMessage.value = error?.message ? String(error.message) : 'BFF 连通性检查失败'
-  } finally {
-    lastConnectionCheckAt.value = formatClockLabel()
-  }
-}
-
-const contextResource = computed(() => props.context?.resource || null)
-
-const buildResourcePrompt = (resource) => {
-  if (!resource) return ''
-
-  const title = resource.title || '当前内容'
-  const preview = resource.contentPreview || '没有可见摘要'
-
-  if (resource.kind === 'note-editor') {
-    const selectedText = resource.selectedText ? `当前选中文本：${resource.selectedText}
-` : ''
-    return `请基于我正在编辑的笔记《${title}》给出内容反馈。先用 1 句话总结，再指出 3 个最值得修改的地方，最后给出一个更好的标题建议。${selectedText}当前正文片段：${preview}`
-  }
-
-  if (resource.kind === 'note-detail') {
-    return `请基于我正在查看的笔记《${title}》给出真实内容反馈。先总结核心观点，再指出可能的逻辑漏洞或缺失信息，最后给出 3 条可执行的补充建议。当前正文片段：${preview}`
-  }
-
-  if (resource.kind === 'qa-detail') {
-    return `请基于我正在查看的问答《${title}》给出反馈。先判断问题是否清晰，再结合当前内容给出更好的回答方向或补充追问建议。当前内容片段：${preview}`
-  }
-
-  return `请基于当前内容《${title}》给出具体反馈：${preview}`
-}
-
-const getAutoAnalysisKey = (resource) => {
-  if (!resource) return ''
-  return [
-    resource.kind || 'unknown',
-    resource.id || resource.noteId || resource.questionId || '0',
-    resource.updatedAt || '0',
-    resource.contentLength || 0,
-    resource.reason || 'none'
-  ].join(':')
-}
-
-const shouldAutoAnalyzeResource = (resource) => {
-  if (!aiEnabled.value || !props.visible || activeMode.value !== 'local') {
-    return false
-  }
-  if (!resource) {
-    return false
-  }
-  if (resource.reason === 'typing') {
-    return false
-  }
-  if (!resource.contentPreview && resource.kind !== 'note-editor') {
-    return false
-  }
-  const key = getAutoAnalysisKey(resource)
-  if (!key || key === lastAutoAnalysisKey.value) {
-    return false
-  }
-  return true
-}
-
-const runAutoAnalysis = async (resource) => {
-  if (!shouldAutoAnalyzeResource(resource)) {
-    return
-  }
-
-  lastAutoAnalysisKey.value = getAutoAnalysisKey(resource)
-  const prompt = buildResourcePrompt(resource)
-  if (!prompt) {
-    return
-  }
-
-  appendMessage('user', prompt)
-  const assistantMessageId = appendAssistantMessage('BFF')
-  streamAbortController = new AbortController()
-  isStreaming.value = true
-
-  try {
-    const result = await streamChatFromBff(prompt, assistantMessageId)
-    finalizeAssistantMessage(assistantMessageId, result, 'BFF')
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      updateAssistantMessage(assistantMessageId, {
-        content: '已中断本次生成。',
-        source: '本地'
-      })
-      return
-    }
-
-    const fallback = buildMockReply(prompt)
-    updateAssistantMessage(assistantMessageId, {
-      content: fallback,
-      source: '本地'
-    })
-  } finally {
-    streamAbortController = null
-    isStreaming.value = false
-  }
-}
-
-watch(
-  () => props.context?.resource,
-  (resource) => {
-    if (resource && props.visible) {
-      runAutoAnalysis(resource)
-    }
-  },
-  { deep: true, immediate: true }
-)
-
-function buildMockReply(prompt) {
-  const base = summarizeContext()
-  const resource = contextResource.value
-
-  if (/标题|title/i.test(prompt)) {
-    return [
-      '标题候选 1：',
-      `${contextSummary.value.pageLabel} 的结构化整理`,
-      '标题候选 2：',
-      `${contextSummary.value.pageLabel} 的可执行清单`,
-      '标题候选 3：',
-      `${contextSummary.value.pageLabel} 的知识摘要`
-    ].join('\n')
-  }
-
-  if (/关键词|keywords/i.test(prompt)) {
-    return [
-      '关键词：',
-      '知识整理',
-      '页面上下文',
-      '笔记检索',
-      'AI 协作',
-      '站内引用'
-    ].join('\uff0c')
-  }
-
-  if (/相似|问题/i.test(prompt)) {
-    return `我会先基于 ${contextSummary.value.routeLabel} 做相似问题判断。当前处于本地演示模式，返回的是稳定占位结果。`
-  }
-
-  if (/总结|摘要|summary/i.test(prompt)) {
-    if (resource?.contentPreview) {
-      return `已读取当前内容《${resource.title || '未命名'}》：${resource.contentPreview}\n\n下一步可以继续做标题生成、关键词抽取或补充引用来源。`
-    }
-    return `已读取宿主上下文：${base}\n下一步可以继续做标题生成、关键词抽取或补充引用来源。`
-  }
-
-  return `本地演示已收到：${prompt}\n\n${base}如果 BFF 已配置，我会把同一条消息以 postMessage 发送给 iframe/后端。`
-}
-
 
 function getAiToken() {
   return localStorage.getItem('token') || ''
@@ -555,7 +289,7 @@ function parseSseEventBlock(block) {
 
   try {
     return JSON.parse(data)
-  } catch (error) {
+  } catch {
     return null
   }
 }
@@ -573,34 +307,41 @@ function tryRouteTarget(target) {
 }
 
 async function streamChatFromBff(message, assistantMessageId) {
-  const response = await fetch(`${configuredOrigin.value.replace(/\/$/, '')}/api/v1/agent/chat/stream`, {
+  const response = await fetch(`${getAiBffOrigin().replace(/\/$/, '')}/api/v1/agent/chat/stream`, {
     method: 'POST',
     headers: buildAiHeaders(),
     body: JSON.stringify({
       message,
       context: buildAiHostSnapshot({
-        route: props.context?.route,
-        userInfo: props.context?.user || userInfo.value,
-        currentTab: props.context?.currentTab,
-        searchKeyword: props.context?.searchKeyword,
-        viewingNoteId: props.context?.viewingNoteId,
-        selectedWorkspaceId: props.context?.selectedWorkspaceId,
-        editingNotebookId: props.context?.editingNotebookId,
-        editingSpaceId: props.context?.editingSpaceId,
-        resource: props.context?.resource
+        route: pageContext.value.route,
+        userInfo: pageContext.value.user || userInfo.value,
+        currentTab: pageContext.value.currentTab || pageContext.value.page?.tab,
+        pageMode: pageMode.value,
+        searchKeyword: pageContext.value.searchKeyword,
+        viewingNoteId: pageContext.value.viewingNoteId,
+        selectedWorkspaceId: pageContext.value.selectedWorkspaceId,
+        editingNotebookId: pageContext.value.editingNotebookId,
+        editingSpaceId: pageContext.value.editingSpaceId,
+        resource: pageContext.value.resource,
+        authToken: getAiToken(),
+        permissions: pageContext.value.permissions || {
+          canAccessWriteActions: pageMode.value === 'edit'
+        }
       }),
       mode: 'local'
     }),
-    signal: streamAbortController?.signal
+    signal: streamAbortController.value?.signal
   })
 
   if (!response.ok) {
-    throw new Error(`BFF ${response.status}`)
+    const body = await response.text().catch(() => '')
+    const error = new Error(body || `BFF ${response.status}`)
+    error.status = response.status
+    throw error
   }
 
   if (!response.body) {
-    const data = await response.json()
-    return data
+    return response.json()
   }
 
   const reader = response.body.getReader()
@@ -610,9 +351,7 @@ async function streamChatFromBff(message, assistantMessageId) {
 
   while (true) {
     const { done, value } = await reader.read()
-    if (done) {
-      break
-    }
+    if (done) break
 
     buffer += decoder.decode(value, { stream: true })
     const blocks = buffer.split('\n\n')
@@ -638,14 +377,14 @@ async function streamChatFromBff(message, assistantMessageId) {
 
   if (buffer.trim()) {
     const evt = parseSseEventBlock(buffer)
-    if (evt && evt.delta) {
+    if (evt?.delta) {
       const current = messages.value.find(item => item.id === assistantMessageId)
       updateAssistantMessage(assistantMessageId, {
         content: `${current?.content || ''}${evt.delta}`,
         source: 'BFF'
       })
     }
-    if (evt && evt.done) {
+    if (evt?.done) {
       finalResult = evt
     }
   }
@@ -657,16 +396,16 @@ async function streamChatFromBff(message, assistantMessageId) {
   }
 }
 
-function finalizeAssistantMessage(assistantMessageId, result, fallbackSource = 'BFF') {
+function finalizeAssistantMessage(assistantMessageId, result) {
   if (!assistantMessageId) return
   const existing = messages.value.find(item => item.id === assistantMessageId)
   if (!existing) return
 
   updateAssistantMessage(assistantMessageId, {
     content: result?.answer || existing.content || '',
-    source: fallbackSource,
     citations: result?.citations || existing.citations || [],
-    route: result?.route || existing.route || null
+    route: result?.route || existing.route || null,
+    rewriteApplied: result?.rewriteApplied || existing.rewriteApplied || false
   })
 
   if (result?.route) {
@@ -674,81 +413,90 @@ function finalizeAssistantMessage(assistantMessageId, result, fallbackSource = '
   }
 }
 
-async function sendToBff(message, assistantMessageId) {
-  const result = await streamChatFromBff(message, assistantMessageId)
-  finalizeAssistantMessage(assistantMessageId, result, 'BFF')
+function buildFallbackReply(prompt) {
+  const resource = resourceContext.value || {}
+  const title = resource.title || pageContext.value.searchKeyword || '当前内容'
+
+  if (/改写|rewrite/i.test(prompt)) {
+    return pageMode.value === 'edit'
+      ? `当前编辑器暂时没有接入直接改写能力，请稍后重试，或者刷新工作区后再发起改写。`
+      : '当前处于浏览态，不能直接改写正文。请先进入编辑页后再继续。'
+  }
+
+  if (/标题|title/i.test(prompt)) {
+    return `标题候选：1. ${title} 的结构化整理 2. ${title} 的可执行清单 3. ${title} 的知识摘要`
+  }
+
+  if (/关键词|keywords/i.test(prompt)) {
+    return '关键词：知识整理、页面上下文、笔记检索、AI 协作、站内引用'
+  }
+
+  if (/相似|similar/i.test(prompt)) {
+    return `我会先基于 ${title} 做相似内容判断。当前处于本地演示模式，返回的是稳定占位结果。`
+  }
+
+  if (/总结|摘要|summary/i.test(prompt)) {
+    return `已读取当前内容《${title}》，下一步可以继续做标题生成、关键词抽取或补充引用来源。`
+  }
+
+  return `本地演示已收到：${prompt}`
 }
 
-function syncContextToFrame() {
-  if (!aiEnabled.value || activeMode.value !== 'iframe') {
-    return
-  }
+function isRewritePrompt(prompt) {
+  return /改写|润色|重写|rewrite|polish/i.test(String(prompt || ''))
+}
 
-  const frame = shellFrameRef.value
-  if (!frame || !frame.contentWindow) {
-    return
-  }
+function requestWorkspaceRewrite(prompt) {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      reject(new Error('当前环境不支持工作区改写'))
+      return
+    }
 
-  const snapshot = buildAiHostSnapshot({
-    route: props.context?.route,
-    userInfo: props.context?.user || userInfo.value,
-    currentTab: props.context?.currentTab,
-    searchKeyword: props.context?.searchKeyword,
-    viewingNoteId: props.context?.viewingNoteId,
-    selectedWorkspaceId: props.context?.selectedWorkspaceId,
-    editingNotebookId: props.context?.editingNotebookId,
-    editingSpaceId: props.context?.editingSpaceId,
-    resource: props.context?.resource,
-    authToken: getAiToken()
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const timeoutId = window.setTimeout(() => {
+      pendingRewriteRequests.delete(requestId)
+      reject(new Error('工作区改写超时，请稍后重试'))
+    }, 120000)
+
+    pendingRewriteRequests.set(requestId, {
+      resolve: (payload) => {
+        window.clearTimeout(timeoutId)
+        pendingRewriteRequests.delete(requestId)
+        resolve(payload)
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutId)
+        pendingRewriteRequests.delete(requestId)
+        reject(error)
+      }
+    })
+
+    window.dispatchEvent(new CustomEvent('folio-ai-rewrite-request', {
+      detail: {
+        requestId,
+        prompt,
+        instruction: prompt,
+        resource: resourceContext.value,
+        pageMode: pageMode.value
+      }
+    }))
   })
-
-  frame.contentWindow.postMessage(
-    {
-      version: AI_PROTOCOL_VERSION,
-      type: AI_MESSAGE_TYPES.CONTEXT,
-      payload: snapshot
-    },
-    getAiTargetOrigin()
-  )
 }
 
-function togglePanelPinned() {
-  panelPinned.value = !panelPinned.value
-  localStorage.setItem(AI_STORAGE_KEYS.panelPinned, String(panelPinned.value))
-}
-function closePanel() {
-  emit('update:visible', false)
-}
+function handleWorkspaceRewriteResult(event) {
+  const detail = event?.detail
+  if (!detail?.requestId) return
 
-function clearMessages() {
-  if (streamAbortController) {
-    streamAbortController.abort()
-    streamAbortController = null
-  }
-  isStreaming.value = false
-  messages.value = []
-  lastAutoAnalysisKey.value = ''
-}
+  const pending = pendingRewriteRequests.get(detail.requestId)
+  if (!pending) return
 
-function suggestDraft() {
-  const resourcePrompt = buildResourcePrompt(contextResource.value)
-  if (resourcePrompt) {
-    return resourcePrompt
-  }
-  return `请围绕 ${contextSummary.value.pageLabel}，生成一个更清晰的 AI 任务请求。`
-}
-
-function triggerQuickAction(action) {
-  if (!aiEnabled.value || isStreaming.value) {
+  if (detail.ok) {
+    pending.resolve(detail.result || { ok: true })
     return
   }
 
-  if (action.key === 'summary' || action.key === 'title' || action.key === 'similar') {
-    draft.value = buildResourcePrompt(contextResource.value) || action.prompt
-  } else {
-    draft.value = action.prompt
-  }
-  sendMessage()
+  pending.reject(new Error(detail.error || '工作区改写失败'))
 }
 
 async function runPrompt(prompt) {
@@ -760,43 +508,64 @@ async function runPrompt(prompt) {
   appendMessage('user', content)
   draft.value = ''
 
-  const assistantMessageId = appendAssistantMessage('BFF', content)
-  streamAbortController = new AbortController()
+  if (isRewritePrompt(content) && pageMode.value === 'edit') {
+    const assistantMessageId = appendAssistantMessage(content)
+    try {
+      updateAssistantMessage(assistantMessageId, {
+        content: '正在把改写应用到当前工作区...',
+        source: 'workspace'
+      })
+      const result = await requestWorkspaceRewrite(content)
+      if (result?.ok) {
+        updateAssistantMessage(assistantMessageId, {
+          content: result.summary || '已改写并应用到工作区，你可以撤销本次改写，或继续提出更具体的要求。',
+          source: 'workspace',
+          rewriteApplied: true,
+          citations: [],
+          route: null
+        })
+      } else {
+        updateAssistantMessage(assistantMessageId, {
+          content: result?.reason ? `改写未执行：${result.reason}` : '改写未执行，请稍后重试。',
+          source: 'workspace'
+        })
+      }
+    } catch (error) {
+      updateAssistantMessage(assistantMessageId, {
+        content: error?.message || '改写失败，请稍后重试。',
+        source: 'workspace'
+      })
+    }
+    return
+  }
+
+  const assistantMessageId = appendAssistantMessage(content)
+  streamAbortController.value = new AbortController()
   isStreaming.value = true
+  requestSeq += 1
+  const currentRequestSeq = requestSeq
 
   try {
-    await sendToBff(content, assistantMessageId)
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      updateAssistantMessage(assistantMessageId, {
-        content: '已中断本次生成。',
-        source: '本地'
-      })
-      return
+    const result = await streamChatFromBff(content, assistantMessageId)
+    if (currentRequestSeq === requestSeq) {
+      finalizeAssistantMessage(assistantMessageId, result)
     }
-
-    const fallback = buildMockReply(content)
+  } catch (error) {
+    const fallback = buildFallbackReply(content)
     updateAssistantMessage(assistantMessageId, {
-      content: fallback,
+      content: error?.status === 403 ? '当前页不允许执行该操作，请切换到编辑页后再试。' : fallback,
       source: '本地'
     })
   } finally {
-    streamAbortController = null
+    streamAbortController.value = null
     isStreaming.value = false
   }
 }
 
-async function sendMessage() {
-  if (isStreaming.value) {
-    if (streamAbortController) {
-      streamAbortController.abort()
-    }
-    isStreaming.value = false
-    return
-  }
-
-  const content = draft.value.trim()
-  await runPrompt(content)
+function useSuggestion(item) {
+  if (!item || !item.prompt || isStreaming.value) return
+  draft.value = item.prompt
+  runPrompt(item.prompt)
 }
 
 function retryPrompt(prompt) {
@@ -808,98 +577,56 @@ function retryPrompt(prompt) {
   runPrompt(prompt)
 }
 
-function switchToIframe() {
-  if (!shellUrl.value) {
+function sendMessage() {
+  if (isStreaming.value) {
+    if (streamAbortController.value) {
+      streamAbortController.value.abort()
+    }
+    isStreaming.value = false
     return
   }
-  activeMode.value = 'iframe'
+
+  runPrompt(draft.value)
 }
 
-watch(aiEnabled, (value) => {
-  localStorage.setItem(AI_STORAGE_KEYS.enabled, String(value))
-  if (!value) {
-    activeMode.value = 'local'
-    localStorage.setItem(AI_STORAGE_KEYS.shellMode, 'local')
+function clearMessages() {
+  if (streamAbortController.value) {
+    streamAbortController.value.abort()
+    streamAbortController.value = null
   }
-})
+  isStreaming.value = false
+  messages.value = []
+}
 
-watch(activeMode, (value) => {
-  localStorage.setItem(AI_STORAGE_KEYS.shellMode, value)
-  if (value === 'iframe') {
-    syncContextToFrame()
-  }
-})
+function closePanel() {
+  emit('update:visible', false)
+}
 
 watch(
   () => props.visible,
   (value) => {
     if (value) {
-      refreshConnectionStatus()
-      syncContextToFrame()
-      if (props.context?.resource) {
-        runAutoAnalysis(props.context.resource)
-      }
+      scrollToBottom()
     }
   }
 )
 
 onMounted(() => {
-  refreshConnectionStatus()
-  frameMessageHandler = (event) => {
-    if (!isValidAiOrigin(event.origin)) {
-      return
-    }
-
-    if (!isAiHostMessage(event.data)) {
-      return
-    }
-
-    if (event.data.type === AI_MESSAGE_TYPES.READY) {
-      syncContextToFrame()
-      return
-    }
-
-    if (event.data.type === AI_MESSAGE_TYPES.ROUTE) {
-      const target = buildRouteTarget(event.data.payload)
-      if (!target) {
-        return
-      }
-
-      if (target.path) {
-        router.push({ path: target.path, query: target.query, params: target.params })
-      } else if (target.routeName) {
-        router.push({ name: target.routeName, query: target.query, params: target.params })
-      }
-    }
+  scrollToBottom()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('folio-ai-rewrite-result', handleWorkspaceRewriteResult)
   }
-
-  window.addEventListener('message', frameMessageHandler)
-  aiContextTimer = setInterval(() => {
-    if (activeMode.value === 'iframe' && aiEnabled.value) {
-      syncContextToFrame()
-    }
-  }, 5000)
-  connectionTimer = setInterval(() => {
-    if (props.visible) {
-      refreshConnectionStatus()
-    }
-  }, 30000)
 })
 
 onBeforeUnmount(() => {
-  if (frameMessageHandler) {
-    window.removeEventListener('message', frameMessageHandler)
-    frameMessageHandler = null
+  if (streamAbortController.value) {
+    streamAbortController.value.abort()
+    streamAbortController.value = null
   }
-
-  if (aiContextTimer) {
-    clearInterval(aiContextTimer)
-    aiContextTimer = null
-  }
-
-  if (connectionTimer) {
-    clearInterval(connectionTimer)
-    connectionTimer = null
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('folio-ai-rewrite-result', handleWorkspaceRewriteResult)
+    pendingRewriteRequests.forEach(({ reject }) => reject(new Error('AI 助手已关闭')))
+    pendingRewriteRequests.clear()
   }
 })
 </script>
@@ -910,49 +637,32 @@ onBeforeUnmount(() => {
   right: 24px;
   bottom: 24px;
   z-index: 2200;
-  width: min(420px, calc(100vw - 32px));
+  width: min(460px, calc(100vw - 32px));
   pointer-events: none;
-}
-
-.ai-panel-shell.is-docked {
-  top: 72px;
-  right: 0;
-  bottom: 0;
-  width: min(460px, calc(100vw - 24px));
-  padding: 0 12px 12px 0;
 }
 
 .ai-panel {
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 560px;
+  gap: 14px;
+  min-height: 620px;
   max-height: calc(100vh - 120px);
   border-radius: 24px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.98)),
-    radial-gradient(circle at top left, rgba(34, 197, 94, 0.25), transparent 55%);
+    linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(15, 23, 42, 0.99)),
+    radial-gradient(circle at top left, rgba(34, 197, 94, 0.18), transparent 55%);
   color: #e2e8f0;
   box-shadow: 0 26px 80px rgba(15, 23, 42, 0.34);
   backdrop-filter: blur(18px);
   overflow: hidden;
 }
 
-.ai-panel-shell.is-docked .ai-panel {
-  min-height: calc(100vh - 96px);
-  max-height: calc(100vh - 96px);
-  border-radius: 20px 0 0 20px;
-}
-
 .ai-panel-header,
-.ai-panel-toolbar,
-.ai-quick-actions,
-.ai-context-card,
+.ai-suggestion-strip,
 .ai-chat-log,
-.ai-composer,
-.ai-frame-panel {
+.ai-composer {
   padding-left: 18px;
   padding-right: 18px;
 }
@@ -996,36 +706,16 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.ai-panel-badge.is-active {
-  background: rgba(34, 197, 94, 0.18);
-  color: #bbf7d0;
-}
-
 .ai-panel-subtitle {
   margin: 0;
   color: #94a3b8;
   font-size: 12px;
 }
 
-.ai-panel-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.ai-mode-button,
-.ai-close-button,
-.ai-secondary-button,
-.ai-send-button,
-.ai-chip {
+.ai-close-button {
   border: none;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
-}
-
-.ai-mode-button,
-.ai-close-button {
   height: 32px;
   padding: 0 12px;
   border-radius: 999px;
@@ -1034,232 +724,38 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.ai-mode-button.active {
-  background: rgba(34, 197, 94, 0.18);
-  color: #dcfce7;
-}
-
-.ai-mode-button.disabled {
-  opacity: 0.45;
-}
-
-.ai-close-button {
-  background: rgba(244, 63, 94, 0.16);
-}
-
-.ai-panel-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.ai-connection-card {
-  margin: 0 18px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(15, 23, 42, 0.62);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 12px;
-}
-
-.ai-connection-card.online {
-  border-color: rgba(34, 197, 94, 0.24);
-  background: rgba(34, 197, 94, 0.08);
-}
-
-.ai-connection-card.offline {
-  border-color: rgba(244, 63, 94, 0.24);
-  background: rgba(244, 63, 94, 0.08);
-}
-
-.ai-connection-card.checking {
-  border-color: rgba(250, 204, 21, 0.22);
-  background: rgba(250, 204, 21, 0.08);
-}
-
-.ai-connection-main {
+.ai-suggestion-strip {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  flex: 1;
-  min-width: 180px;
-}
-
-.ai-connection-label {
-  font-size: 13px;
-  font-weight: 700;
-  color: #f8fafc;
-}
-
-.ai-connection-message,
-.ai-connection-origin,
-.ai-connection-time {
-  font-size: 12px;
-  color: #cbd5e1;
-}
-
-.ai-connection-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ai-connection-origin {
-  word-break: break-all;
-}
-
-.ai-connection-refresh {
-  margin-left: auto;
-}
-
-.ai-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  user-select: none;
-  cursor: pointer;
-}
-
-.ai-toggle input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.ai-toggle-track {
-  width: 42px;
-  height: 24px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.28);
-  position: relative;
-  flex-shrink: 0;
-}
-
-.ai-toggle-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: #f8fafc;
-  transition: transform 0.18s ease;
-}
-
-.ai-toggle input:checked + .ai-toggle-track {
-  background: rgba(34, 197, 94, 0.42);
-}
-
-.ai-toggle input:checked + .ai-toggle-track .ai-toggle-thumb {
-  transform: translateX(18px);
-}
-
-.ai-toggle-label {
-  font-size: 12px;
-  color: #cbd5e1;
-}
-
-.ai-secondary-button,
-.ai-send-button {
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-
-.ai-secondary-button {
-  background: rgba(148, 163, 184, 0.14);
-  color: #e2e8f0;
-}
-
-.ai-send-button {
-  background: linear-gradient(135deg, #22c55e, #16a34a);
-  color: #f8fafc;
-}
-
-.ai-quick-actions {
-  display: flex;
-  flex-wrap: wrap;
   gap: 8px;
 }
 
-.ai-chip {
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #e2e8f0;
-  font-size: 12px;
-}
-
-.ai-context-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ai-context-title {
+.ai-suggestion-title {
   font-size: 12px;
   color: #94a3b8;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.ai-context-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.ai-context-item {
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(15, 23, 42, 0.58);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+.ai-suggestion-list {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.ai-context-item .label {
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.ai-context-item .value {
-  font-size: 12px;
+.ai-suggestion-chip {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.06);
   color: #e2e8f0;
-  word-break: break-all;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
 }
 
-.ai-frame-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 300px;
-  padding-bottom: 18px;
-}
-
-.ai-frame-wrapper {
-  flex: 1;
-  min-height: 360px;
-  border-radius: 18px;
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(15, 23, 42, 0.5);
-}
-
-.ai-frame {
-  width: 100%;
-  height: 100%;
-  min-height: 360px;
-  border: 0;
-  background: #020617;
+.ai-suggestion-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .ai-chat-log {
@@ -1267,44 +763,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   overflow: auto;
-  min-height: 220px;
-  max-height: 280px;
-}
-
-.ai-history-strip {
-  padding: 0 18px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ai-history-label {
-  font-size: 12px;
-  color: #94a3b8;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.ai-history-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ai-history-chip {
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(255, 255, 255, 0.06);
-  color: #e2e8f0;
-  border-radius: 999px;
-  padding: 7px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  max-width: 100%;
-  text-align: left;
-}
-
-.ai-history-chip:hover {
-  background: rgba(255, 255, 255, 0.1);
+  min-height: 260px;
+  flex: 1;
 }
 
 .ai-message {
@@ -1415,7 +875,28 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.ai-send-button:disabled {
+.ai-secondary-button,
+.ai-send-button {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: none;
+  cursor: pointer;
+}
+
+.ai-secondary-button {
+  background: rgba(148, 163, 184, 0.14);
+  color: #e2e8f0;
+}
+
+.ai-send-button {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #f8fafc;
+}
+
+.ai-send-button:disabled,
+.ai-secondary-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -1439,23 +920,7 @@ onBeforeUnmount(() => {
   }
 
   .ai-panel {
-    min-height: 520px;
-  }
-
-  .ai-context-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .ai-panel-header {
-    flex-direction: column;
-  }
-
-  .ai-panel-actions {
-    justify-content: flex-start;
-  }
-
-  .ai-connection-card {
-    margin: 0 18px;
+    min-height: 560px;
   }
 }
 </style>
