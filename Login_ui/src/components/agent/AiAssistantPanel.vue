@@ -49,6 +49,20 @@
           </button>
         </div>
 
+        <div class="ai-connection-card" :class="connectionStatusClass">
+          <div class="ai-connection-main">
+            <span class="ai-connection-label">{{ connectionStatusLabel }}</span>
+            <span class="ai-connection-message">{{ connectionMessage }}</span>
+          </div>
+          <div class="ai-connection-meta">
+            <span class="ai-connection-origin">{{ configuredOrigin }}</span>
+            <span v-if="lastConnectionCheckAt" class="ai-connection-time">更新于 {{ lastConnectionCheckAt }}</span>
+          </div>
+          <button type="button" class="ai-secondary-button ai-connection-refresh" @click="refreshConnectionStatus">
+            重新检测
+          </button>
+        </div>
+
         <div class="ai-quick-actions">
           <button
             v-for="action in quickActions"
@@ -100,10 +114,39 @@
         </div>
 
         <template v-else>
+          <div v-if="recentPrompts.length" class="ai-history-strip">
+            <span class="ai-history-label">最近提示</span>
+            <div class="ai-history-list">
+              <button
+                v-for="prompt in recentPrompts"
+                :key="prompt"
+                type="button"
+                class="ai-history-chip"
+                @click="retryPrompt(prompt)"
+              >
+                {{ prompt }}
+              </button>
+            </div>
+          </div>
+
           <div class="ai-chat-log" ref="logRef">
             <article v-for="item in messages" :key="item.id" :class="['ai-message', item.role]">
               <div class="ai-message-role">{{ item.roleLabel }}</div>
               <div class="ai-message-content">{{ item.content }}</div>
+              <div v-if="item.citations && item.citations.length" class="ai-message-citations">
+                <span
+                  v-for="citation in item.citations.slice(0, 3)"
+                  :key="citation.noteId || citation.questionId || citation.url || citation.title"
+                  class="ai-message-citation"
+                >
+                  {{ citation.title || citation.url || citation.summary || '引用' }}
+                </span>
+              </div>
+              <div v-if="item.role === 'assistant' && item.prompt" class="ai-message-actions">
+                <button type="button" class="ai-message-action" @click="retryPrompt(item.prompt)">
+                  重新生成
+                </button>
+              </div>
               <div class="ai-message-meta">
                 {{ item.timeLabel }}
                 <span v-if="item.source" class="ai-message-source">· {{ item.source }}</span>
@@ -142,6 +185,7 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { AI_MESSAGE_TYPES, AI_PROTOCOL_VERSION, AI_STORAGE_KEYS, getAiBffOrigin, getAiShellUrl, getAiTargetOrigin, isValidAiOrigin } from '@/config/ai'
+import { probeAiBff } from '@/api/ai'
 import { buildAiHostSnapshot, buildRouteTarget, isAiHostMessage } from '@/utils/aiProtocol'
 
 const props = defineProps({
@@ -171,6 +215,9 @@ const configuredOrigin = computed(() => getAiBffOrigin())
 const shellUrl = computed(() => (aiEnabled.value ? getAiShellUrl() : ''))
 const isStreaming = ref(false)
 const lastAutoAnalysisKey = ref('')
+const connectionState = ref('checking')
+const connectionMessage = ref('正在检测 BFF 连通性')
+const lastConnectionCheckAt = ref('')
 
 const contextSummary = computed(() => {
   const ctx = props.context || {}
@@ -190,9 +237,37 @@ const contextSummary = computed(() => {
     roleLabel: ctx.user?.role || userInfo.value?.role || 'User'
   }
 })
+const recentPrompts = computed(() => {
+  const prompts = []
+  const seen = new Set()
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    const item = messages.value[i]
+    if (item.role !== 'user' || !item.content) continue
+    const prompt = String(item.content).trim()
+    if (!prompt || seen.has(prompt)) continue
+    seen.add(prompt)
+    prompts.push(prompt)
+    if (prompts.length >= 5) break
+  }
+  return prompts
+})
 
 const activeModeLabel = computed(() => (activeMode.value === 'iframe' ? 'iframe 宿主' : '本地演示'))
 const shellStatusLabel = computed(() => (configuredOrigin.value ? 'BFF 已配置' : 'BFF 未配置'))
+const connectionStatusLabel = computed(() => {
+  if (connectionState.value === 'online') {
+    return 'BFF 在线'
+  }
+  if (connectionState.value === 'offline') {
+    return 'BFF 离线'
+  }
+  return 'BFF 检测中'
+})
+const connectionStatusClass = computed(() => ({
+  online: connectionState.value === 'online',
+  offline: connectionState.value === 'offline',
+  checking: connectionState.value === 'checking'
+}))
 
 const quickActions = computed(() => {
   const actions = [
@@ -208,31 +283,40 @@ const quickActions = computed(() => {
 let frameMessageHandler = null
 let aiContextTimer = null
 let streamAbortController = null
+let connectionTimer = null
 
 function nowLabel() {
   return new Date().toLocaleTimeString()
 }
 
-function appendMessage(role, content) {
+function appendMessage(role, content, extra = {}) {
   const roleLabel = role === 'assistant' ? 'AI' : '你'
   messages.value.push({
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role,
     roleLabel,
     content,
-    timeLabel: nowLabel()
+    timeLabel: nowLabel(),
+    ...extra
   })
   scrollToBottom()
 }
 
-function appendAssistantMessage(source = 'BFF') {
+function formatClockLabel(date = new Date()) {
+  return date.toLocaleTimeString()
+}
+
+function appendAssistantMessage(source = 'BFF', prompt = '') {
   const item = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role: 'assistant',
     roleLabel: 'AI',
     content: '',
     timeLabel: nowLabel(),
-    source
+    source,
+    prompt,
+    citations: [],
+    route: null
   }
   messages.value.push(item)
   scrollToBottom()
@@ -265,6 +349,22 @@ function summarizeContext() {
   const role = ctx.user?.role || userInfo.value?.role || 'User'
 
   return `当前页面是 ${tab}，路由是 ${routePath}，笔记 ID ${noteId}，空间 ID ${workspace}，用户角色 ${role}。`
+}
+
+async function refreshConnectionStatus() {
+  connectionState.value = 'checking'
+  connectionMessage.value = '正在检测 BFF 连通性'
+
+  try {
+    const health = await probeAiBff()
+    connectionState.value = 'online'
+    connectionMessage.value = health?.service ? `${health.service} 可用` : 'BFF 可用'
+  } catch (error) {
+    connectionState.value = 'offline'
+    connectionMessage.value = error?.message ? String(error.message) : 'BFF 连通性检查失败'
+  } finally {
+    lastConnectionCheckAt.value = formatClockLabel()
+  }
 }
 
 const contextResource = computed(() => props.context?.resource || null)
@@ -631,24 +731,16 @@ function triggerQuickAction(action) {
   sendMessage()
 }
 
-async function sendMessage() {
-  if (isStreaming.value) {
-    if (streamAbortController) {
-      streamAbortController.abort()
-    }
-    isStreaming.value = false
-    return
-  }
-
-  const content = draft.value.trim()
-  if (!content || !aiEnabled.value) {
+async function runPrompt(prompt) {
+  const content = String(prompt || '').trim()
+  if (!content || !aiEnabled.value || isStreaming.value) {
     return
   }
 
   appendMessage('user', content)
   draft.value = ''
 
-  const assistantMessageId = appendAssistantMessage('BFF')
+  const assistantMessageId = appendAssistantMessage('BFF', content)
   streamAbortController = new AbortController()
   isStreaming.value = true
 
@@ -672,6 +764,28 @@ async function sendMessage() {
     streamAbortController = null
     isStreaming.value = false
   }
+}
+
+async function sendMessage() {
+  if (isStreaming.value) {
+    if (streamAbortController) {
+      streamAbortController.abort()
+    }
+    isStreaming.value = false
+    return
+  }
+
+  const content = draft.value.trim()
+  await runPrompt(content)
+}
+
+function retryPrompt(prompt) {
+  if (!prompt || isStreaming.value || !aiEnabled.value) {
+    return
+  }
+
+  draft.value = prompt
+  runPrompt(prompt)
 }
 
 function switchToIframe() {
@@ -700,6 +814,7 @@ watch(
   () => props.visible,
   (value) => {
     if (value) {
+      refreshConnectionStatus()
       syncContextToFrame()
       if (props.context?.resource) {
         runAutoAnalysis(props.context.resource)
@@ -709,6 +824,7 @@ watch(
 )
 
 onMounted(() => {
+  refreshConnectionStatus()
   frameMessageHandler = (event) => {
     if (!isValidAiOrigin(event.origin)) {
       return
@@ -743,6 +859,11 @@ onMounted(() => {
       syncContextToFrame()
     }
   }, 5000)
+  connectionTimer = setInterval(() => {
+    if (props.visible) {
+      refreshConnectionStatus()
+    }
+  }, 30000)
 })
 
 onBeforeUnmount(() => {
@@ -754,6 +875,11 @@ onBeforeUnmount(() => {
   if (aiContextTimer) {
     clearInterval(aiContextTimer)
     aiContextTimer = null
+  }
+
+  if (connectionTimer) {
+    clearInterval(connectionTimer)
+    connectionTimer = null
   }
 })
 </script>
@@ -892,6 +1018,69 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.ai-connection-card {
+  margin: 0 18px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.62);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.ai-connection-card.online {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.ai-connection-card.offline {
+  border-color: rgba(244, 63, 94, 0.24);
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.ai-connection-card.checking {
+  border-color: rgba(250, 204, 21, 0.22);
+  background: rgba(250, 204, 21, 0.08);
+}
+
+.ai-connection-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 180px;
+}
+
+.ai-connection-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.ai-connection-message,
+.ai-connection-origin,
+.ai-connection-time {
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.ai-connection-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-connection-origin {
+  word-break: break-all;
+}
+
+.ai-connection-refresh {
+  margin-left: auto;
 }
 
 .ai-toggle {
@@ -1048,6 +1237,42 @@ onBeforeUnmount(() => {
   max-height: 280px;
 }
 
+.ai-history-strip {
+  padding: 0 18px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-history-label {
+  font-size: 12px;
+  color: #94a3b8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ai-history-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-history-chip {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 100%;
+  text-align: left;
+}
+
+.ai-history-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .ai-message {
   padding: 12px;
   border-radius: 16px;
@@ -1075,6 +1300,39 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1.7;
   color: #f8fafc;
+}
+
+.ai-message-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-message-citation {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.ai-message-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ai-message-action {
+  border: none;
+  background: transparent;
+  color: #86efac;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ai-message-action:hover {
+  text-decoration: underline;
 }
 
 .ai-empty-state {
@@ -1160,6 +1418,10 @@ onBeforeUnmount(() => {
 
   .ai-panel-actions {
     justify-content: flex-start;
+  }
+
+  .ai-connection-card {
+    margin: 0 18px;
   }
 }
 </style>
