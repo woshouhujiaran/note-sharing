@@ -1,6 +1,6 @@
 <template>
   <transition name="ai-panel-fade">
-    <div v-if="visible" class="ai-panel-shell">
+    <div v-if="visible" class="ai-panel-shell" :class="{ 'is-docked': panelPinned }">
       <section class="ai-panel">
         <header class="ai-panel-header">
           <div class="ai-panel-title-group">
@@ -11,11 +11,11 @@
               </span>
             </div>
             <p class="ai-panel-subtitle">
-              宿主控制 · {{ activeModeLabel }} · {{ shellStatusLabel }}
+              宿主控制 · {{ activeModeLabel }} · {{ panelLayoutLabel }} · {{ shellStatusLabel }}
             </p>
           </div>
 
-          <div class="ai-panel-actions">
+                              <div class="ai-panel-actions">
             <button type="button" class="ai-mode-button" :class="{ active: activeMode === 'local' }" @click="activeMode = 'local'">
               本地演示
             </button>
@@ -26,7 +26,10 @@
               :disabled="!shellUrl"
               @click="switchToIframe"
             >
-              iframe 壳
+              iframe 宿主
+            </button>
+            <button type="button" class="ai-mode-button" :class="{ active: panelPinned }" @click="togglePanelPinned">
+              {{ panelPinned ? '取消固定' : '固定侧栏' }}
             </button>
             <button type="button" class="ai-close-button" @click="closePanel">收起</button>
           </div>
@@ -76,27 +79,30 @@
         </div>
 
         <div class="ai-context-card">
-          <div class="ai-context-title">当前上下文</div>
+          <div class="ai-context-title">褰撳墠涓婁笅鏂?</div>
           <div class="ai-context-grid">
             <div class="ai-context-item">
-              <span class="label">页面</span>
+              <span class="label">椤甸潰</span>
               <span class="value">{{ contextSummary.pageLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">路线</span>
+              <span class="label">璺嚎</span>
               <span class="value">{{ contextSummary.routeLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">资源</span>
+              <span class="label">璧勬簮</span>
               <span class="value">{{ contextSummary.resourceLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">角色</span>
+              <span class="label">閫夊尯</span>
+              <span class="value">{{ contextSummary.selectedTextLabel }}</span>
+            </div>
+            <div class="ai-context-item">
+              <span class="label">瑙掕壊</span>
               <span class="value">{{ contextSummary.roleLabel }}</span>
             </div>
           </div>
         </div>
-
         <div v-if="activeMode === 'iframe'" class="ai-frame-panel">
           <div v-if="shellUrl" class="ai-frame-wrapper">
             <iframe
@@ -207,6 +213,7 @@ const { userInfo } = storeToRefs(userStore)
 
 const aiEnabled = ref(localStorage.getItem(AI_STORAGE_KEYS.enabled) !== 'false')
 const activeMode = ref(localStorage.getItem(AI_STORAGE_KEYS.shellMode) || 'local')
+const panelPinned = ref(localStorage.getItem(AI_STORAGE_KEYS.panelPinned) === 'true')
 const draft = ref('')
 const messages = ref([])
 const logRef = ref(null)
@@ -234,6 +241,7 @@ const contextSummary = computed(() => {
           : ctx.editingNotebookId
             ? `编辑器 ${ctx.editingNotebookId}`
             : '无',
+    selectedTextLabel: resource.selectedText ? resource.selectedText : '无选中文本',
     roleLabel: ctx.user?.role || userInfo.value?.role || 'User'
   }
 })
@@ -253,6 +261,7 @@ const recentPrompts = computed(() => {
 })
 
 const activeModeLabel = computed(() => (activeMode.value === 'iframe' ? 'iframe 宿主' : '本地演示'))
+const panelLayoutLabel = computed(() => (panelPinned.value ? '固定侧栏' : '浮窗模式'))
 const shellStatusLabel = computed(() => (configuredOrigin.value ? 'BFF 已配置' : 'BFF 未配置'))
 const connectionStatusLabel = computed(() => {
   if (connectionState.value === 'online') {
@@ -376,7 +385,8 @@ const buildResourcePrompt = (resource) => {
   const preview = resource.contentPreview || '没有可见摘要'
 
   if (resource.kind === 'note-editor') {
-    return `请基于我正在编辑的笔记《${title}》给出内容反馈。先用 1 句话总结，再指出 3 个最值得修改的地方，最后给出一个更好的标题建议。当前正文片段：${preview}`
+    const selectedText = resource.selectedText ? `当前选中文本：${resource.selectedText}\n` : ''
+    return `请基于我正在编辑的笔记《${title}》给出内容反馈。先用 1 句话总结，再指出 3 个最值得修改的地方，最后给出一个更好的标题建议。${selectedText}当前正文片段：${preview}`
   }
 
   if (resource.kind === 'note-detail') {
@@ -696,6 +706,10 @@ function syncContextToFrame() {
   )
 }
 
+function togglePanelPinned() {
+  panelPinned.value = !panelPinned.value
+  localStorage.setItem(AI_STORAGE_KEYS.panelPinned, String(panelPinned.value))
+}
 function closePanel() {
   emit('update:visible', false)
 }
@@ -894,6 +908,14 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+.ai-panel-shell.is-docked {
+  top: 72px;
+  right: 0;
+  bottom: 0;
+  width: min(460px, calc(100vw - 24px));
+  padding: 0 12px 12px 0;
+}
+
 .ai-panel {
   pointer-events: auto;
   display: flex;
@@ -910,6 +932,12 @@ onBeforeUnmount(() => {
   box-shadow: 0 26px 80px rgba(15, 23, 42, 0.34);
   backdrop-filter: blur(18px);
   overflow: hidden;
+}
+
+.ai-panel-shell.is-docked .ai-panel {
+  min-height: calc(100vh - 96px);
+  max-height: calc(100vh - 96px);
+  border-radius: 20px 0 0 20px;
 }
 
 .ai-panel-header,

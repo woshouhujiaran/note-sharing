@@ -5,7 +5,8 @@ export const AI_PROTOCOL_VERSION = '1.0'
 export const AI_STORAGE_KEYS = {
   enabled: 'folio.ai.enabled',
   panelOpen: 'folio.ai.panel.open',
-  shellMode: 'folio.ai.shell.mode'
+  shellMode: 'folio.ai.shell.mode',
+  panelPinned: 'folio.ai.panel.pinned'
 }
 
 export const AI_MESSAGE_TYPES = {

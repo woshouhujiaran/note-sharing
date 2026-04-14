@@ -478,6 +478,23 @@ const props = defineProps({
 });
 const emit = defineEmits(['close', 'note-selected', 'ai-context-updated']);
 
+const getSelectedTextFromEditor = (editorInstance) => {
+  if (!editorInstance || !editorInstance.state || !editorInstance.state.selection) {
+    return ''
+  }
+
+  const { from, to, empty } = editorInstance.state.selection
+  if (empty || from === to) {
+    return ''
+  }
+
+  return editorInstance.state.doc
+    .textBetween(from, to, '\n', ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160)
+}
+
 // ----------------- 状态管理 -----------------
 const showNoteMenuId = ref(null);
 const showInsertMenu = ref(false);
@@ -564,6 +581,7 @@ const emitAiContextUpdate = (reason = 'editor') => {
     ? editor.value.getHTML()
     : currentNote.value.content || currentNote.value.title || ''
   const contentPreview = extractPlainText(htmlContent)
+  const selectedText = currentNoteType.value === 'md' ? getSelectedTextFromEditor(editor.value) : ''
 
   emit('ai-context-updated', {
     kind: 'note-editor',
@@ -576,6 +594,7 @@ const emitAiContextUpdate = (reason = 'editor') => {
     status: isNoteUnderModerationRef.value ? 'moderating' : 'editing',
     contentPreview,
     contentLength: contentPreview.length,
+    selectedText,
     updatedAt: currentNote.value.updatedAt || null,
     isDirty: true,
     reason
@@ -817,6 +836,11 @@ const editor = useEditor({
 
       // 4. 调用防抖函数，而不是直接调用 updateNote
       debouncedUpdateNote(meta, mdFile);
+    }
+  },
+  onSelectionUpdate: ({ editor }) => {
+    if (currentNote.value && currentNoteType.value === 'md') {
+      scheduleAiContextUpdate(getSelectedTextFromEditor(editor) ? 'selection' : 'selection-clear')
     }
   }
 });
