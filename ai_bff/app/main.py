@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+from .agent import AgentRuntime
+from .auth import AuthError, extract_user_from_authorization
+from .login_api_client import LoginApiClient
+from .schemas import ChatRequest, KeywordRequest, SimilarQuestionRequest
+from .settings import settings
+
+app = FastAPI(title=settings.app_name)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+agent_runtime = AgentRuntime(LoginApiClient(settings.login_api_base_url))
+
+
+def _auth_token(authorization: str | None) -> str | None:
+    try:
+        user = extract_user_from_authorization(authorization, settings.jwt_secret or None)
+        if not user.user_id and not user.username:
+            raise AuthError("empty user payload")
+        return authorization.removeprefix("Bearer ").strip()
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def _stream_sse(data: dict[str, Any]):
+    async def generator():
+        answer = data.get("answer", "")
+        if not answer:
+            yield "data: {}\n\n"
+            return
+
+        chunks = answer.split()
+        for index, chunk in enumerate(chunks):
+            payload = {"delta": chunk + (" " if index < len(chunks) - 1 else "")}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.02)
+
+        yield f"data: {json.dumps({'done': True, 'answer': answer, 'citations': data.get('citations', []), 'route': data.get('route')}, ensure_ascii=False)}\n\n"
+
+    return generator()
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "service": settings.app_name,
+        "login_api_base_url": settings.login_api_base_url,
+    }
+
+
+@app.get("/shell", response_class=HTMLResponse)
+async def shell():
+    return HTMLResponse(
+        """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FOLIO AI Shell</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(34, 197, 94, 0.24), transparent 40%),
+        linear-gradient(180deg, #0f172a, #020617);
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    header h1 { margin: 0; font-size: 18px; }
+    header p { margin: 6px 0 0; color: #94a3b8; font-size: 12px; }
+    #context {
+      padding: 12px 18px;
+      font-size: 12px;
+      color: #cbd5e1;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      min-height: 64px;
+      white-space: pre-wrap;
+    }
+    #log {
+      flex: 1;
+      overflow: auto;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      white-space: pre-wrap;
+    }
+    .msg.user { background: rgba(34, 197, 94, 0.14); }
+    footer {
+      padding: 14px 18px 18px;
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+      display: flex;
+      gap: 10px;
+    }
+    textarea {
+      flex: 1;
+      min-height: 58px;
+      resize: none;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(2, 6, 23, 0.72);
+      color: #e2e8f0;
+      padding: 10px 12px;
+    }
+    button {
+      border: none;
+      border-radius: 14px;
+      padding: 0 16px;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 0 18px 12px;
+    }
+    .chip {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(148, 163, 184, 0.08);
+      color: #e2e8f0;
+      border-radius: 999px;
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FOLIO AI Shell</h1>
+    <p>iframe 宿主页面 · 通过 postMessage 与上层宿主通信</p>
+  </header>
+  <div id="context">等待宿主上下文...</div>
+  <div class="chips">
+    <button class="chip" data-action="title">生成标题</button>
+    <button class="chip" data-action="summary">总结当前页</button>
+    <button class="chip" data-action="keywords">提炼关键词</button>
+    <button class="chip" data-action="route">请求跳转</button>
+  </div>
+  <div id="log"></div>
+  <footer>
+    <textarea id="input" placeholder="输入一条消息"></textarea>
+    <button id="send">发送</button>
+  </footer>
+    <script>
+    const version = "1.0";
+    const log = document.getElementById("log");
+    const input = document.getElementById("input");
+    const contextBox = document.getElementById("context");
+    let hostContext = null;
+
+    function append(role, text) {
+      const el = document.createElement("div");
+      el.className = "msg " + role;
+      el.textContent = text;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function sendToHost(type, payload) {
+      window.parent.postMessage({ version, type, payload }, "*");
+    }
+
+    function handleChatMessage(message) {
+      if (!message) return;
+      append("user", message);
+      const lower = message.toLowerCase();
+      let answer = "我已经收到消息，并在 iframe 壳内完成了稳定回显。";
+      if (message.includes("标题") || lower.includes("title")) {
+        answer = "标题候选：1. 页面结构化整理 2. 当前内容摘要 3. AI 协作笔记";
+      } else if (message.includes("关键词") || lower.includes("keywords")) {
+        answer = "关键词：AI 协作、笔记整理、上下文、引用、搜索";
+      } else if (message.includes("总结") || lower.includes("summary")) {
+        answer = "当前页面上下文已记录，可继续进行标题生成、关键词提炼或跳转建议。";
+      }
+      append("assistant", answer);
+      if (lower.includes("搜索") || lower.includes("search")) {
+        sendToHost("ai.route", { path: "/main", query: { tab: "search" } });
+      }
+    }
+
+    window.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (!data || data.version !== version) {
+        return;
+      }
+      if (data.type === "ai.context") {
+        hostContext = data.payload || null;
+        contextBox.textContent = JSON.stringify(hostContext, null, 2);
+        sendToHost("ai.ready", { ok: true });
+      }
+      if (data.type === "ai.chat") {
+        const message = data.payload && data.payload.message ? data.payload.message : "";
+        handleChatMessage(message);
+      }
+    });
+
+    document.getElementById("send").addEventListener("click", () => {
+      const message = input.value.trim();
+      if (!message) return;
+      handleChatMessage(message);
+      input.value = "";
+    });
+
+    document.querySelectorAll(".chip").forEach((button) => {
+      button.addEventListener("click", () => {
+        const action = button.getAttribute("data-action");
+        const mapping = {
+          title: "请根据当前上下文生成标题。",
+          summary: "请总结当前页面内容。",
+          keywords: "请抽取当前页面的关键词。",
+          route: "请给出一个推荐跳转。"
+        };
+        const message = mapping[action];
+        if (message) {
+          handleChatMessage(message);
+        }
+      });
+    });
+
+    sendToHost("ai.ready", { ok: true });
+  </script>
+</body>
+</html>
+        """.strip()
+    )
+
+
+@app.post("/api/v1/agent/chat")
+async def chat(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = ChatRequest.model_validate(await request.json())
+    result = await agent_runtime.run(payload, auth_token)
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/agent/chat/stream")
+async def chat_stream(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = ChatRequest.model_validate(await request.json())
+    result = await agent_runtime.run(payload, auth_token)
+    return StreamingResponse(_stream_sse(result), media_type="text/event-stream")
+
+
+@app.post("/api/v1/agent/keywords")
+async def keywords(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = KeywordRequest.model_validate(await request.json())
+    result = await agent_runtime.keywords(payload, auth_token)
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/agent/similar-questions")
+async def similar_questions(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = SimilarQuestionRequest.model_validate(await request.json())
+    result = await agent_runtime.similar_questions(payload, auth_token)
+    return JSONResponse(result)
