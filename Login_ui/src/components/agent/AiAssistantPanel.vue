@@ -11,11 +11,11 @@
               </span>
             </div>
             <p class="ai-panel-subtitle">
-              宿主控制 · {{ activeModeLabel }} · {{ panelLayoutLabel }} · {{ shellStatusLabel }}
+              宿主控制 ? {{ activeModeLabel }} ? {{ panelLayoutLabel }} ? {{ shellStatusLabel }}
             </p>
           </div>
 
-                              <div class="ai-panel-actions">
+          <div class="ai-panel-actions">
             <button type="button" class="ai-mode-button" :class="{ active: activeMode === 'local' }" @click="activeMode = 'local'">
               本地演示
             </button>
@@ -47,7 +47,7 @@
           <button type="button" class="ai-secondary-button" @click="syncContextToFrame">
             推送上下文
           </button>
-            <button type="button" class="ai-secondary-button" @click="clearMessages">
+          <button type="button" class="ai-secondary-button" @click="clearMessages">
             清空会话
           </button>
         </div>
@@ -79,30 +79,31 @@
         </div>
 
         <div class="ai-context-card">
-          <div class="ai-context-title">褰撳墠涓婁笅鏂?</div>
+          <div class="ai-context-title">当前上下文</div>
           <div class="ai-context-grid">
             <div class="ai-context-item">
-              <span class="label">椤甸潰</span>
+              <span class="label">页面</span>
               <span class="value">{{ contextSummary.pageLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">璺嚎</span>
+              <span class="label">路由</span>
               <span class="value">{{ contextSummary.routeLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">璧勬簮</span>
+              <span class="label">资源</span>
               <span class="value">{{ contextSummary.resourceLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">閫夊尯</span>
+              <span class="label">选区</span>
               <span class="value">{{ contextSummary.selectedTextLabel }}</span>
             </div>
             <div class="ai-context-item">
-              <span class="label">瑙掕壊</span>
+              <span class="label">角色</span>
               <span class="value">{{ contextSummary.roleLabel }}</span>
             </div>
           </div>
         </div>
+
         <div v-if="activeMode === 'iframe'" class="ai-frame-panel">
           <div v-if="shellUrl" class="ai-frame-wrapper">
             <iframe
@@ -155,7 +156,7 @@
               </div>
               <div class="ai-message-meta">
                 {{ item.timeLabel }}
-                <span v-if="item.source" class="ai-message-source">· {{ item.source }}</span>
+                <span v-if="item.source" class="ai-message-source">? {{ item.source }}</span>
               </div>
             </article>
 
@@ -231,7 +232,7 @@ const contextSummary = computed(() => {
   const resource = ctx.resource || {}
   return {
     pageLabel: ctx.pageLabel || ctx.currentTab || '未知页面',
-    routeLabel: ctx.route?.path || ctx.route?.name || '未识别',
+    routeLabel: ctx.route?.path || ctx.route?.name || '未知路由',
     resourceLabel: resource.title
       ? `${resource.kind || 'resource'} · ${resource.title}`
       : ctx.viewingNoteId
@@ -239,7 +240,7 @@ const contextSummary = computed(() => {
         : ctx.selectedWorkspaceId
           ? `空间 ${ctx.selectedWorkspaceId}`
           : ctx.editingNotebookId
-            ? `编辑器 ${ctx.editingNotebookId}`
+            ? `笔记本 ${ctx.editingNotebookId}`
             : '无',
     selectedTextLabel: resource.selectedText ? resource.selectedText : '无选中文本',
     roleLabel: ctx.user?.role || userInfo.value?.role || 'User'
@@ -277,6 +278,9 @@ const connectionStatusClass = computed(() => ({
   offline: connectionState.value === 'offline',
   checking: connectionState.value === 'checking'
 }))
+
+
+
 
 const quickActions = computed(() => {
   const actions = [
@@ -352,7 +356,7 @@ function scrollToBottom() {
 function summarizeContext() {
   const ctx = props.context || {}
   const routePath = ctx.route?.path || '未知路由'
-  const tab = ctx.currentTab || ctx.page?.tab || '未设置'
+  const tab = ctx.currentTab || ctx.page?.tab || '未知标签'
   const noteId = ctx.viewingNoteId ? String(ctx.viewingNoteId) : '无'
   const workspace = ctx.selectedWorkspaceId ? String(ctx.selectedWorkspaceId) : '无'
   const role = ctx.user?.role || userInfo.value?.role || 'User'
@@ -362,7 +366,7 @@ function summarizeContext() {
 
 async function refreshConnectionStatus() {
   connectionState.value = 'checking'
-  connectionMessage.value = '正在检测 BFF 连通性'
+  connectionMessage.value = '正在检查 BFF 连通性'
 
   try {
     const health = await probeAiBff()
@@ -385,7 +389,8 @@ const buildResourcePrompt = (resource) => {
   const preview = resource.contentPreview || '没有可见摘要'
 
   if (resource.kind === 'note-editor') {
-    const selectedText = resource.selectedText ? `当前选中文本：${resource.selectedText}\n` : ''
+    const selectedText = resource.selectedText ? `当前选中文本：${resource.selectedText}
+` : ''
     return `请基于我正在编辑的笔记《${title}》给出内容反馈。先用 1 句话总结，再指出 3 个最值得修改的地方，最后给出一个更好的标题建议。${selectedText}当前正文片段：${preview}`
   }
 
@@ -484,7 +489,7 @@ function buildMockReply(prompt) {
   const base = summarizeContext()
   const resource = contextResource.value
 
-  if (/标题|起标题|title/i.test(prompt)) {
+  if (/标题|title/i.test(prompt)) {
     return [
       '标题候选 1：',
       `${contextSummary.value.pageLabel} 的结构化整理`,
@@ -503,7 +508,7 @@ function buildMockReply(prompt) {
       '笔记检索',
       'AI 协作',
       '站内引用'
-    ].join('，')
+    ].join('\uff0c')
   }
 
   if (/相似|问题/i.test(prompt)) {
@@ -514,11 +519,12 @@ function buildMockReply(prompt) {
     if (resource?.contentPreview) {
       return `已读取当前内容《${resource.title || '未命名'}》：${resource.contentPreview}\n\n下一步可以继续做标题生成、关键词抽取或补充引用来源。`
     }
-    return `已读取宿主上下文：${base}下一步可以继续做标题生成、关键词抽取或补充引用来源。`
+    return `已读取宿主上下文：${base}\n下一步可以继续做标题生成、关键词抽取或补充引用来源。`
   }
 
   return `本地演示已收到：${prompt}\n\n${base}如果 BFF 已配置，我会把同一条消息以 postMessage 发送给 iframe/后端。`
 }
+
 
 function getAiToken() {
   return localStorage.getItem('token') || ''
