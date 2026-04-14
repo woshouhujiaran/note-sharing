@@ -75,13 +75,15 @@
                 <h3 class="section-title">AI 工具</h3>
                 <p class="qa-ai-panel-subtitle">围绕当前问题、回答和追问做更细的分析。</p>
               </div>
-              <span class="qa-ai-panel-badge">{{ aiToolActive === 'summary' ? '总结' : aiToolActive }}</span>
+              <span class="qa-ai-panel-badge">{{ getQuestionAiToolLabel(aiToolActive) }}</span>
             </div>
             <div class="qa-ai-actions">
               <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('summary')">总结</button>
               <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('answer')">回答思路</button>
               <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('similar')">相似问题</button>
               <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('followup')">追问</button>
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('skeleton')">答案骨架</button>
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('boundary')">边界检查</button>
             </div>
             <div v-if="aiToolResult" class="qa-ai-result">
               <div class="qa-ai-result-title">{{ aiToolResult.title }}</div>
@@ -89,6 +91,15 @@
               <div v-if="aiToolResult.meta && Array.isArray(aiToolResult.meta)" class="qa-ai-result-meta">
                 <div v-for="item in aiToolResult.meta.slice(0, 3)" :key="item.questionId || item.answerId || item.title" class="qa-ai-result-chip">
                   {{ item.title || item.content || '相关内容' }}
+                </div>
+              </div>
+              <div v-if="aiToolResult.citations && aiToolResult.citations.length" class="qa-ai-result-citations">
+                <div
+                  v-for="item in aiToolResult.citations.slice(0, 3)"
+                  :key="item.questionId || item.answerId || item.title"
+                  class="qa-ai-result-citation"
+                >
+                  {{ item.title || item.content || '引用来源' }}
                 </div>
               </div>
             </div>
@@ -357,6 +368,15 @@ const aiToolLoading = ref(false)
 const aiToolResult = ref(null)
 const aiToolActive = ref('summary')
 
+const questionAiToolLabels = {
+  summary: '总结',
+  answer: '回答思路',
+  similar: '相似问题',
+  followup: '追问',
+  skeleton: '答案骨架',
+  boundary: '边界检查'
+}
+
 const extractPlainText = (value) => {
   if (!value) return ''
   if (typeof document === 'undefined') {
@@ -484,6 +504,28 @@ const runQuestionAiTool = async (tool) => {
         content: data.answer || '暂无结果',
         citations: data.citations || []
       }
+    } else if (tool === 'skeleton') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前问题给出一个可直接用于发布回答的答案骨架，要求分成背景、分析、结论三部分。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '答案骨架',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    } else if (tool === 'boundary') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请检查当前问题的边界条件、容易误解的地方和回答时应该先确认的信息。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '边界检查',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
     }
   } catch (err) {
     aiToolResult.value = {
@@ -494,6 +536,10 @@ const runQuestionAiTool = async (tool) => {
   } finally {
     aiToolLoading.value = false
   }
+}
+
+const getQuestionAiToolLabel = (tool) => {
+  return questionAiToolLabels[tool] || tool || '总结'
 }
 
 // 获取问题详情
@@ -1272,6 +1318,23 @@ onMounted(() => {
   background: rgba(0, 127, 255, 0.08);
   font-size: 11px;
   color: var(--brand-primary);
+}
+
+.qa-ai-result-citations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.qa-ai-result-citation {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(0, 127, 255, 0.08);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
 }
 
 .action-icon {
