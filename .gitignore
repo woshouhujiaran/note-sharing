@@ -1,0 +1,5 @@
+**/__pycache__/
+*.pyc
+Login_ui/dist/
+Login_ui/node_modules/
+ai_bff/.venv/
