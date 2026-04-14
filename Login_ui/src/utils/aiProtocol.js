@@ -23,6 +23,27 @@ function toPlainQuery(query) {
   return result
 }
 
+function toPreviewText(value, limit = 320) {
+  if (!value) {
+    return ''
+  }
+
+  const normalized = String(value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (normalized.length <= limit) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, limit).trim()}…`
+}
+
 export function buildAiHostSnapshot({
   route,
   userInfo,
@@ -31,7 +52,8 @@ export function buildAiHostSnapshot({
   viewingNoteId,
   selectedWorkspaceId,
   editingNotebookId,
-  editingSpaceId
+  editingSpaceId,
+  resource
 }) {
   return {
     version: AI_PROTOCOL_VERSION,
@@ -49,6 +71,27 @@ export function buildAiHostSnapshot({
       editingNotebookId: editingNotebookId || null,
       editingSpaceId: editingSpaceId || null
     },
+    resource: resource
+      ? {
+          kind: resource.kind || null,
+          id: resource.id || null,
+          title: resource.title || null,
+          fileType: resource.fileType || null,
+          status: resource.status || null,
+          noteId: resource.noteId || null,
+          questionId: resource.questionId || null,
+          notebookId: resource.notebookId || null,
+          spaceId: resource.spaceId || null,
+          contentPreview: toPreviewText(resource.contentPreview || resource.content || ''),
+          contentLength: resource.contentLength || 0,
+          commentCount: resource.commentCount || 0,
+          answerCount: resource.answerCount || 0,
+          isDirty: Boolean(resource.isDirty),
+          updatedAt: resource.updatedAt || null,
+          selectedText: toPreviewText(resource.selectedText || '', 160),
+          tags: Array.isArray(resource.tags) ? resource.tags.slice(0, 10) : []
+        }
+      : null,
     user: {
       id: userInfo?.id || null,
       username: userInfo?.username || null,

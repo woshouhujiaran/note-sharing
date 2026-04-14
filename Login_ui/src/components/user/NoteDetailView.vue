@@ -276,7 +276,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['stats-updated'])
+const emit = defineEmits(['stats-updated', 'ai-context-updated'])
 
 const loading = ref(true)
 const contentLoading = ref(false)
@@ -311,6 +311,34 @@ const debounceTimers = ref({})
 const fileUrl = ref(null)
 const markdownContent = ref('')
 const fileUnavailable = ref(false)
+
+const extractPlainText = (value) => {
+  if (!value) return ''
+  if (typeof document === 'undefined') return String(value).replace(/\s+/g, ' ').trim()
+  const container = document.createElement('div')
+  container.innerHTML = String(value)
+  return (container.textContent || container.innerText || '').replace(/\s+/g, ' ').trim()
+}
+
+const emitAiContextUpdate = (reason = 'note-detail') => {
+  if (!noteDetail.value) return
+
+  const contentPreview = extractPlainText(markdownContent.value || noteDetail.value.content || '')
+  emit('ai-context-updated', {
+    kind: 'note-detail',
+    id: noteDetail.value.noteId,
+    noteId: noteDetail.value.noteId,
+    title: noteDetail.value.title || props.initialTitle || '无标题笔记',
+    fileType: noteDetail.value.fileType || null,
+    status: fileUnavailable.value ? 'unavailable' : 'ready',
+    contentPreview,
+    contentLength: contentPreview.length,
+    commentCount: comments.value.length || 0,
+    stats: { ...stats.value },
+    updatedAt: noteDetail.value.createdAt || null,
+    reason
+  })
+}
 
 // 评论相关状态
 const comments = ref([])
@@ -401,6 +429,7 @@ const updateStatsFromResponse = (statsData) => {
   if (stats.value.authorName && stats.value.authorName !== '未知作者') {
     fetchAuthorUserId(stats.value.authorName)
   }
+  emitAiContextUpdate('stats')
 }
 
 // 根据作者名称获取作者userId
@@ -583,6 +612,7 @@ const fetchNoteDetail = async () => {
       await fetchComments(noteId)
       // 订阅 WebSocket
       subscribeToComments()
+      emitAiContextUpdate('load')
       loading.value = false
       return // 提前返回，不加载文件内容，但保持标题、作者、点赞、收藏等功能正常
     }
@@ -599,6 +629,7 @@ const fetchNoteDetail = async () => {
       restoreActionState()
       await fetchComments(noteId)
       subscribeToComments()
+      emitAiContextUpdate('load')
       loading.value = false
       return
     }
@@ -629,6 +660,7 @@ const fetchNoteDetail = async () => {
         if (response.ok) {
           const text = await response.text()
           markdownContent.value = mdParser.render(text)
+          emitAiContextUpdate('content')
         } else {
           throw new Error('无法加载笔记内容')
         }
@@ -636,8 +668,8 @@ const fetchNoteDetail = async () => {
         console.error('加载Markdown内容失败:', err)
         error.value = '无法加载笔记内容'
       } finally {
-        contentLoading.value = false
-      }
+      contentLoading.value = false
+    }
     }
 
     // 增加阅读量
@@ -654,6 +686,7 @@ const fetchNoteDetail = async () => {
   } catch (err) {
     console.error('获取笔记详情失败:', err)
     error.value = err.message || '加载笔记详情失败，请稍后重试'
+    emitAiContextUpdate('error')
   } finally {
     loading.value = false
   }
@@ -736,6 +769,7 @@ watch(() => props.initialStats, (newStats) => {
 watch(() => props.initialTitle, (newTitle) => {
   if (newTitle && noteDetail.value) {
     noteDetail.value.title = newTitle
+    emitAiContextUpdate('title')
   }
 }, { immediate: true })
 
@@ -791,9 +825,11 @@ const fetchComments = async (noteIdParam = null) => {
       console.warn('[fetchComments] 警告：noteId已变化，丢弃旧的评论数据。当前:', currentNoteIdNum, '请求的:', noteId)
       comments.value = []
     }
+    emitAiContextUpdate('comments')
   } catch (err) {
     console.error('获取评论列表失败:', err)
     comments.value = []
+    emitAiContextUpdate('comments-error')
   } finally {
     commentsLoading.value = false
   }
@@ -839,6 +875,7 @@ const handleSubmitComment = async () => {
         comments: stats.value.comments
       })
     }
+    emitAiContextUpdate('comment-created')
   } catch (err) {
     console.error('发表评论失败:', err)
     showError('发表评论失败，请稍后重试')
@@ -892,6 +929,7 @@ const submitReply = async (targetComment) => {
         comments: stats.value.comments
       })
     }
+    emitAiContextUpdate('reply-created')
   } catch (err) {
     console.error('回复评论失败:', err)
     showError('回复失败，请稍后重试')

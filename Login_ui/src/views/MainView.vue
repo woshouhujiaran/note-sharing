@@ -91,6 +91,7 @@
             :initialNoteId="editingNoteId"
             @close="handleCloseEditor"
             @note-selected="handleNoteSelected"
+            @ai-context-updated="handleAiContextUpdated"
         />
       </section>
 
@@ -125,6 +126,7 @@
           :initialStats="noteDetailStats"
           :initialTitle="noteDetailTitle"
           @stats-updated="handleStatsUpdated"
+          @ai-context-updated="handleAiContextUpdated"
         />
       </section>
       <section v-else-if="currentTab === 'follow' && currentUserId">
@@ -139,6 +141,7 @@
           :answerId="route.query.answerId"
           :commentId="route.query.commentId"
           :replyId="route.query.replyId"
+          @ai-context-updated="handleAiContextUpdated"
         />
       </section>
       <section v-else-if="currentTab === 'workspace'">
@@ -271,6 +274,7 @@ const userAvatarUrl = computed(() => {
 
 // 当前用户ID
 const currentUserId = computed(() => userInfo.value?.id)
+const aiResourceContext = ref(null)
 
 // 私信面板控制与未读数
 const showPrivateMessagePanel = ref(false)
@@ -506,7 +510,8 @@ const aiHostContext = computed(() => buildAiHostSnapshot({
   viewingNoteId: viewingNoteId.value,
   selectedWorkspaceId: selectedWorkspaceId.value,
   editingNotebookId: editingNotebookId.value,
-  editingSpaceId: editingSpaceId.value
+  editingSpaceId: editingSpaceId.value,
+  resource: aiResourceContext.value
 }))
 
 // 搜索相关状态
@@ -834,6 +839,7 @@ const restoreEditorFromRoute = async (shouldSetTab = true) => {
 // 处理 WorkspaceView 发出的"打开笔记本"事件
 const handleOpenNotebook = (payload) => {
   if (payload && typeof payload.notebookId !== 'undefined') {
+    aiResourceContext.value = null
     editingNotebookId.value = payload.notebookId;
     editingSpaceId.value = payload.spaceId;
     editingNotebookName.value = payload.notebookName;
@@ -899,6 +905,7 @@ const handleCloseEditor = () => {
     selectedWorkspaceId.value = spaceIdBeforeClose
     newQuery.workspaceId = spaceIdBeforeClose
   }
+  aiResourceContext.value = null
   
   router.replace({
     path: route.path,
@@ -912,6 +919,7 @@ const handleCloseEditor = () => {
 // 处理 WorkspaceView 发出的"空间选中"事件
 const handleWorkspaceSelected = (workspaceId) => {
   selectedWorkspaceId.value = workspaceId
+  aiResourceContext.value = null
   
   // 将选中的空间ID保存到 URL（只在 workspace tab 时）
   if (currentTab.value === 'workspace') {
@@ -974,6 +982,15 @@ const handleOpenNoteDetail = (payload) => {
     
     // 保存标题（如果从搜索结果传递过来）
     noteDetailTitle.value = payload.title || null
+    aiResourceContext.value = {
+      kind: 'note-detail',
+      noteId: payload.noteId,
+      title: payload.title || null,
+      fileType: payload.fileType || null,
+      contentPreview: payload.contentSummary || payload.summary || '',
+      commentCount: payload.commentCount || 0,
+      updatedAt: payload.updatedAt || null
+    }
     
     // 保存统计信息（如果从搜索结果传递过来）
     if (payload.authorName !== undefined || payload.viewCount !== undefined) {
@@ -1067,6 +1084,21 @@ const handleStatsUpdated = (payload) => {
     }
   }
 }
+
+const handleAiContextUpdated = (payload) => {
+  if (!payload || typeof payload !== 'object') {
+    return
+  }
+
+  aiResourceContext.value = payload
+}
+
+watch(currentTab, (value) => {
+  const resourceTabs = new Set(['note-detail', 'workspace', 'qa-detail'])
+  if (!resourceTabs.has(value)) {
+    aiResourceContext.value = null
+  }
+})
 
 // 监听路由中的搜索关键词
 watch(() => route.query.keyword, (newKeyword) => {

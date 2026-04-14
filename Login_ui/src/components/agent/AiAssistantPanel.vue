@@ -170,19 +170,23 @@ const shellFrameRef = ref(null)
 const configuredOrigin = computed(() => getAiBffOrigin())
 const shellUrl = computed(() => (aiEnabled.value ? getAiShellUrl() : ''))
 const isStreaming = ref(false)
+const lastAutoAnalysisKey = ref('')
 
 const contextSummary = computed(() => {
   const ctx = props.context || {}
+  const resource = ctx.resource || {}
   return {
     pageLabel: ctx.pageLabel || ctx.currentTab || '未知页面',
     routeLabel: ctx.route?.path || ctx.route?.name || '未识别',
-    resourceLabel: ctx.viewingNoteId
-      ? `笔记 ${ctx.viewingNoteId}`
-      : ctx.selectedWorkspaceId
-        ? `空间 ${ctx.selectedWorkspaceId}`
-        : ctx.editingNotebookId
-          ? `编辑器 ${ctx.editingNotebookId}`
-          : '无',
+    resourceLabel: resource.title
+      ? `${resource.kind || 'resource'} · ${resource.title}`
+      : ctx.viewingNoteId
+        ? `笔记 ${ctx.viewingNoteId}`
+        : ctx.selectedWorkspaceId
+          ? `空间 ${ctx.selectedWorkspaceId}`
+          : ctx.editingNotebookId
+            ? `编辑器 ${ctx.editingNotebookId}`
+            : '无',
     roleLabel: ctx.user?.role || userInfo.value?.role || 'User'
   }
 })
@@ -263,8 +267,112 @@ function summarizeContext() {
   return `当前页面是 ${tab}，路由是 ${routePath}，笔记 ID ${noteId}，空间 ID ${workspace}，用户角色 ${role}。`
 }
 
+const contextResource = computed(() => props.context?.resource || null)
+
+const buildResourcePrompt = (resource) => {
+  if (!resource) return ''
+
+  const title = resource.title || '当前内容'
+  const preview = resource.contentPreview || '没有可见摘要'
+
+  if (resource.kind === 'note-editor') {
+    return `请基于我正在编辑的笔记《${title}》给出内容反馈。先用 1 句话总结，再指出 3 个最值得修改的地方，最后给出一个更好的标题建议。当前正文片段：${preview}`
+  }
+
+  if (resource.kind === 'note-detail') {
+    return `请基于我正在查看的笔记《${title}》给出真实内容反馈。先总结核心观点，再指出可能的逻辑漏洞或缺失信息，最后给出 3 条可执行的补充建议。当前正文片段：${preview}`
+  }
+
+  if (resource.kind === 'qa-detail') {
+    return `请基于我正在查看的问答《${title}》给出反馈。先判断问题是否清晰，再结合当前内容给出更好的回答方向或补充追问建议。当前内容片段：${preview}`
+  }
+
+  return `请基于当前内容《${title}》给出具体反馈：${preview}`
+}
+
+const getAutoAnalysisKey = (resource) => {
+  if (!resource) return ''
+  return [
+    resource.kind || 'unknown',
+    resource.id || resource.noteId || resource.questionId || '0',
+    resource.updatedAt || '0',
+    resource.contentLength || 0,
+    resource.reason || 'none'
+  ].join(':')
+}
+
+const shouldAutoAnalyzeResource = (resource) => {
+  if (!aiEnabled.value || !props.visible || activeMode.value !== 'local') {
+    return false
+  }
+  if (!resource) {
+    return false
+  }
+  if (resource.reason === 'typing') {
+    return false
+  }
+  if (!resource.contentPreview && resource.kind !== 'note-editor') {
+    return false
+  }
+  const key = getAutoAnalysisKey(resource)
+  if (!key || key === lastAutoAnalysisKey.value) {
+    return false
+  }
+  return true
+}
+
+const runAutoAnalysis = async (resource) => {
+  if (!shouldAutoAnalyzeResource(resource)) {
+    return
+  }
+
+  lastAutoAnalysisKey.value = getAutoAnalysisKey(resource)
+  const prompt = buildResourcePrompt(resource)
+  if (!prompt) {
+    return
+  }
+
+  appendMessage('user', prompt)
+  const assistantMessageId = appendAssistantMessage('BFF')
+  streamAbortController = new AbortController()
+  isStreaming.value = true
+
+  try {
+    const result = await streamChatFromBff(prompt, assistantMessageId)
+    finalizeAssistantMessage(assistantMessageId, result, 'BFF')
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      updateAssistantMessage(assistantMessageId, {
+        content: '已中断本次生成。',
+        source: '本地'
+      })
+      return
+    }
+
+    const fallback = buildMockReply(prompt)
+    updateAssistantMessage(assistantMessageId, {
+      content: fallback,
+      source: '本地'
+    })
+  } finally {
+    streamAbortController = null
+    isStreaming.value = false
+  }
+}
+
+watch(
+  () => props.context?.resource,
+  (resource) => {
+    if (resource && props.visible) {
+      runAutoAnalysis(resource)
+    }
+  },
+  { deep: true, immediate: true }
+)
+
 function buildMockReply(prompt) {
   const base = summarizeContext()
+  const resource = contextResource.value
 
   if (/标题|起标题|title/i.test(prompt)) {
     return [
@@ -293,6 +401,9 @@ function buildMockReply(prompt) {
   }
 
   if (/总结|摘要|summary/i.test(prompt)) {
+    if (resource?.contentPreview) {
+      return `已读取当前内容《${resource.title || '未命名'}》：${resource.contentPreview}\n\n下一步可以继续做标题生成、关键词抽取或补充引用来源。`
+    }
     return `已读取宿主上下文：${base}下一步可以继续做标题生成、关键词抽取或补充引用来源。`
   }
 
@@ -359,7 +470,8 @@ async function streamChatFromBff(message, assistantMessageId) {
         viewingNoteId: props.context?.viewingNoteId,
         selectedWorkspaceId: props.context?.selectedWorkspaceId,
         editingNotebookId: props.context?.editingNotebookId,
-        editingSpaceId: props.context?.editingSpaceId
+        editingSpaceId: props.context?.editingSpaceId,
+        resource: props.context?.resource
       }),
       mode: 'local'
     }),
@@ -469,7 +581,8 @@ function syncContextToFrame() {
     viewingNoteId: props.context?.viewingNoteId,
     selectedWorkspaceId: props.context?.selectedWorkspaceId,
     editingNotebookId: props.context?.editingNotebookId,
-    editingSpaceId: props.context?.editingSpaceId
+    editingSpaceId: props.context?.editingSpaceId,
+    resource: props.context?.resource
   })
 
   frame.contentWindow.postMessage(
@@ -493,9 +606,14 @@ function clearMessages() {
   }
   isStreaming.value = false
   messages.value = []
+  lastAutoAnalysisKey.value = ''
 }
 
 function suggestDraft() {
+  const resourcePrompt = buildResourcePrompt(contextResource.value)
+  if (resourcePrompt) {
+    return resourcePrompt
+  }
   return `请围绕 ${contextSummary.value.pageLabel}，生成一个更清晰的 AI 任务请求。`
 }
 
@@ -504,7 +622,11 @@ function triggerQuickAction(action) {
     return
   }
 
-  draft.value = action.prompt
+  if (action.key === 'summary' || action.key === 'title' || action.key === 'similar') {
+    draft.value = buildResourcePrompt(contextResource.value) || action.prompt
+  } else {
+    draft.value = action.prompt
+  }
   sendMessage()
 }
 
@@ -578,6 +700,9 @@ watch(
   (value) => {
     if (value) {
       syncContextToFrame()
+      if (props.context?.resource) {
+        runAutoAnalysis(props.context.resource)
+      }
     }
   }
 )

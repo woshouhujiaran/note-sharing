@@ -32,6 +32,26 @@ def _get_context(request: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _get_resource(context: dict[str, Any]) -> dict[str, Any]:
+    resource = context.get("resource")
+    if isinstance(resource, dict):
+        return resource
+    return {}
+
+
+def _preview_text(value: Any, limit: int = 180) -> str:
+    text = str(value or "").replace("\n", " ").replace("\r", " ").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _resource_label(resource: dict[str, Any], fallback: str = "当前内容") -> str:
+    return str(resource.get("title") or fallback)
+
+
 def _extract_keywords(text: str) -> list[str]:
     raw_parts = [
         part.strip(" ,，。！？!?\n\t")
@@ -47,9 +67,27 @@ def _extract_keywords(text: str) -> list[str]:
 async def _collect_facts(state: AgentState, client: LoginApiClient) -> AgentState:
     request = state.get("request", {})
     context = _get_context(request)
+    resource = _get_resource(context)
     message = str(request.get("message") or "")
     facts: list[str] = []
     citations: list[dict[str, Any]] = list(state.get("citations", []))
+
+    resource_kind = str(resource.get("kind") or "").lower()
+    resource_title = _resource_label(resource)
+    resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 240)
+
+    if resource_preview:
+        facts.append(f"当前内容片段: 《{resource_title}》 {resource_preview}")
+        if resource.get("contentLength"):
+            facts.append(f"内容长度约 {resource.get('contentLength')} 字符")
+        if resource.get("reason") == "typing":
+            facts.append("这是编辑中的实时内容片段，而不是静态页面信息")
+        if resource_kind == "note-editor":
+            facts.append("当前处于笔记编辑态，反馈应聚焦结构、表达和可修改点")
+        elif resource_kind == "note-detail":
+            facts.append("当前处于笔记查看态，反馈应聚焦摘要、观点和补充信息")
+        elif resource_kind == "qa-detail":
+            facts.append("当前处于问答查看态，反馈应聚焦问题清晰度和回答方向")
 
     note_id = context.get("page", {}).get("viewingNoteId") or context.get("page", {}).get("noteId")
     if note_id:
@@ -154,8 +192,28 @@ def _draft_answer(state: AgentState) -> AgentState:
     facts = state.get("facts", [])
     context = _get_context(request)
     page = context.get("page", {})
+    resource = _get_resource(context)
+    resource_kind = str(resource.get("kind") or "").lower()
+    resource_title = _resource_label(resource)
+    resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 260)
 
-    if any(keyword in message for keyword in ("标题", "起标题", "title")):
+    if resource_preview and any(keyword in message for keyword in ("总结", "摘要", "summary", "反馈", "点评")):
+        if resource_kind == "note-editor":
+            answer = (
+                f"基于正在编辑的笔记《{resource_title}》，我看到的内容片段是：{resource_preview}\n\n"
+                f"建议：1. 先补一个能概括全文的标题 2. 把现有内容拆成更清晰的小节 3. 把结论或待办单独拎出来。"
+            )
+        elif resource_kind == "qa-detail":
+            answer = (
+                f"基于当前问答《{resource_title}》，问题内容片段是：{resource_preview}\n\n"
+                f"建议：1. 明确提问目标 2. 补足必要背景 3. 回答时优先给可执行方案。"
+            )
+        else:
+            answer = (
+                f"基于当前内容《{resource_title}》，核心片段是：{resource_preview}\n\n"
+                f"建议：1. 提炼核心观点 2. 补充关键论据 3. 增加一个下一步动作。"
+            )
+    elif any(keyword in message for keyword in ("标题", "起标题", "title")):
         answer = "标题候选：1. 结构化整理 2. 站内引用摘要 3. 可执行知识卡片"
     elif any(keyword in message for keyword in ("关键词", "keywords")):
         answer = f"关键词：{'、'.join(_extract_keywords(message))}"
@@ -170,6 +228,7 @@ def _draft_answer(state: AgentState) -> AgentState:
                 and not fact.startswith("已连接")
                 and not fact.startswith("笔记预览")
                 and not fact.startswith("检索到")
+                and not fact.startswith("当前内容片段")
                 and not fact.startswith("未命中远端上下文")
             ),
             None,
@@ -232,11 +291,16 @@ class AgentRuntime:
         }
 
     async def summarize_note(self, request: NoteSummaryRequest, auth_token: str | None = None) -> dict[str, Any]:
+        context = _get_context(request.model_dump())
+        resource = _get_resource(context)
         note = await self._login_api_client.fetch_note_preview(request.note_id, auth_token)
         title = str(note.get("title") or "未命名笔记")
         keyword = request.keyword or title
         related_notes = await self._login_api_client.search_notes(keyword, user_id=self._context_user_id(request.context), token=auth_token)
         summary_source = self._pick_summary_source(note, related_notes)
+        resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 220)
+        if resource_preview:
+            summary_source = f"基于宿主提供的正文片段：{resource_preview}"
         summary = f"笔记《{title}》：{summary_source}" if summary_source else f"当前笔记《{title}》已接入只读代理，后续可继续接入正文摘要。"
 
         citations = [
@@ -267,11 +331,16 @@ class AgentRuntime:
         ).model_dump()
 
     async def reference_question(self, request: QuestionReferenceRequest, auth_token: str | None = None) -> dict[str, Any]:
+        context = _get_context(request.model_dump())
+        resource = _get_resource(context)
         question = await self._login_api_client.fetch_question_detail(request.question_id, auth_token)
         question_title = str(question.get("title") or "未命名问题")
         similar_questions = await self._login_api_client.search_questions(question_title, token=auth_token)
         answer_count = int(question.get("answerCount") or 0)
         summary = self._build_question_summary(question, answer_count)
+        resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 220)
+        if resource_preview:
+            summary = f"基于宿主提供的问答片段：{resource_preview}"
 
         references = []
         for answer in (question.get("answers") or [])[:2]:

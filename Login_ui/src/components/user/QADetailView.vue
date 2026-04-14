@@ -312,6 +312,8 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['ai-context-updated'])
+
 const loading = ref(true)
 const error = ref(null)
 const question = ref(null)
@@ -327,6 +329,41 @@ const activeReplyAnswerId = ref(null)
 const activeReplyCommentId = ref(null)
 const replyInputs = ref({})
 
+const extractPlainText = (value) => {
+  if (!value) return ''
+  if (typeof document === 'undefined') {
+    return String(value).replace(/\s+/g, ' ').trim()
+  }
+  const container = document.createElement('div')
+  container.innerHTML = String(value)
+  return (container.textContent || container.innerText || '').replace(/\s+/g, ' ').trim()
+}
+
+const emitAiContextUpdate = (reason = 'qa-detail') => {
+  if (!question.value) return
+
+  const contentPreview = extractPlainText(question.value.content || '')
+  const answerCount = question.value.answers?.length || 0
+  const commentCount = question.value.answers?.reduce((total, answer) => {
+    return total + (answer.comments?.length || 0)
+  }, 0) || 0
+
+  emit('ai-context-updated', {
+    kind: 'qa-detail',
+    id: question.value.questionId,
+    questionId: question.value.questionId,
+    title: question.value.title || '未命名问题',
+    status: 'read',
+    contentPreview,
+    contentLength: contentPreview.length,
+    answerCount,
+    commentCount,
+    tags: Array.isArray(question.value.tags) ? question.value.tags.slice(0, 10) : [],
+    updatedAt: question.value.createdAt || null,
+    reason
+  })
+}
+
 // 获取问题详情
 const fetchQuestionDetail = async () => {
   if (!props.questionId) return
@@ -338,6 +375,7 @@ const fetchQuestionDetail = async () => {
     const data = await getQuestionDetail(props.questionId)
     if (data) {
       question.value = data
+      emitAiContextUpdate('load')
       
       // 优先顺序：回复 → 评论 → 回答
       if (props.replyId) {
@@ -374,6 +412,7 @@ const fetchQuestionDetail = async () => {
   } catch (err) {
     console.error('获取问题详情失败', err)
     error.value = '获取问题详情失败，请稍后重试'
+    emitAiContextUpdate('error')
   } finally {
     loading.value = false
   }
@@ -466,6 +505,7 @@ const handleCreateAnswer = async () => {
     answerInput.value = ''
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('answer-created')
   } catch (err) {
     console.error('创建回答失败', err)
     showError('创建回答失败')
@@ -483,6 +523,7 @@ const handleLikeQuestion = async () => {
   try {
     await likeQuestion(userId, props.questionId)
     await fetchQuestionDetail()
+    emitAiContextUpdate('question-liked')
   } catch (err) {
     console.error('点赞问题失败', err)
     showError('点赞失败')
@@ -500,6 +541,7 @@ const handleFavoriteQuestion = async () => {
   try {
     await favoriteQuestion(userId, props.questionId)
     await fetchQuestionDetail()
+    emitAiContextUpdate('question-favorited')
   } catch (err) {
     console.error('收藏问题失败', err)
     showError('收藏失败')
@@ -517,6 +559,7 @@ const handleLikeAnswer = async (answer) => {
   try {
     await likeAnswer(userId, props.questionId, answer.answerId)
     await fetchQuestionDetail()
+    emitAiContextUpdate('answer-liked')
   } catch (err) {
     console.error('点赞回答失败', err)
     showError('点赞失败')
@@ -568,6 +611,7 @@ const handleCreateComment = async (answer) => {
     activeCommentAnswerId.value = null
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('comment-created')
   } catch (err) {
     console.error('创建评论失败', err)
     showError('创建评论失败')
@@ -585,6 +629,7 @@ const handleLikeComment = async (answer, comment) => {
   try {
     await likeComment(userId, props.questionId, answer.answerId, comment.commentId)
     await fetchQuestionDetail()
+    emitAiContextUpdate('comment-liked')
   } catch (err) {
     console.error('点赞评论失败', err)
     showError('点赞失败')
@@ -643,6 +688,7 @@ const handleCreateReply = async (answer, comment) => {
     activeReplyCommentId.value = null
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('reply-created')
   } catch (err) {
     console.error('创建回复失败', err)
     showError('创建回复失败')
@@ -660,6 +706,7 @@ const handleLikeReply = async (answer, comment, reply) => {
   try {
     await likeReply(userId, props.questionId, answer.answerId, comment.commentId, reply.replyId)
     await fetchQuestionDetail()
+    emitAiContextUpdate('reply-liked')
   } catch (err) {
     console.error('点赞回复失败', err)
     showError('点赞失败')
@@ -692,6 +739,7 @@ const handleDeleteAnswer = async (answer) => {
     showSuccess('删除成功')
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('answer-deleted')
   } catch (err) {
     console.error('删除回答失败', err)
     showError('删除回答失败，请稍后重试')
@@ -724,6 +772,7 @@ const handleDeleteComment = async (answer, comment) => {
     showSuccess('删除成功')
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('comment-deleted')
   } catch (err) {
     console.error('删除评论失败', err)
     showError('删除评论失败，请稍后重试')
@@ -756,6 +805,7 @@ const handleDeleteReply = async (answer, comment, reply) => {
     showSuccess('删除成功')
     // 重新加载问题详情
     await fetchQuestionDetail()
+    emitAiContextUpdate('reply-deleted')
   } catch (err) {
     console.error('删除回复失败', err)
     showError('删除回复失败，请稍后重试')
@@ -798,6 +848,7 @@ const handleDeleteQuestion = async () => {
     showSuccess('删除成功')
     // 返回问答列表页
     goBack()
+    emitAiContextUpdate('question-deleted')
   } catch (err) {
     console.error('删除问题失败', err)
     showError('删除问题失败，请稍后重试')

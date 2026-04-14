@@ -476,7 +476,7 @@ const props = defineProps({
   notebookList: Array,
   initialNoteId: Number  // 初始选中的笔记ID
 });
-const emit = defineEmits(['close', 'note-selected']);
+const emit = defineEmits(['close', 'note-selected', 'ai-context-updated']);
 
 // ----------------- 状态管理 -----------------
 const showNoteMenuId = ref(null);
@@ -495,6 +495,7 @@ const uploadFileInput = ref(null);
 const isLoading = ref(false);
 const renameInputRef = ref(null);
 const isSelectingNote = ref(false); // 防止重复点击笔记
+let aiContextEmitTimer = null;
 
 // 敏感词检测相关状态
 const isCheckingSensitive = ref(false);
@@ -545,6 +546,50 @@ const mdParser = new MarkdownIt({
   linkify: true, // 自动识别链接
   breaks: true, // 换行符转为 <br>
 });
+
+const extractPlainText = (value) => {
+  if (!value) return ''
+  if (typeof document === 'undefined') {
+    return String(value).replace(/\s+/g, ' ').trim()
+  }
+  const container = document.createElement('div')
+  container.innerHTML = String(value)
+  return (container.textContent || container.innerText || '').replace(/\s+/g, ' ').trim()
+}
+
+const emitAiContextUpdate = (reason = 'editor') => {
+  if (!currentNote.value) return
+
+  const htmlContent = currentNoteType.value === 'md' && editor.value
+    ? editor.value.getHTML()
+    : currentNote.value.content || currentNote.value.title || ''
+  const contentPreview = extractPlainText(htmlContent)
+
+  emit('ai-context-updated', {
+    kind: 'note-editor',
+    id: currentNote.value.id,
+    noteId: currentNote.value.id,
+    notebookId: currentNote.value.notebookId || props.notebookId || null,
+    spaceId: props.spaceId || null,
+    title: currentTitle.value || currentNote.value.title || '无标题笔记',
+    fileType: currentNoteType.value || currentNote.value.fileType || null,
+    status: isNoteUnderModerationRef.value ? 'moderating' : 'editing',
+    contentPreview,
+    contentLength: contentPreview.length,
+    updatedAt: currentNote.value.updatedAt || null,
+    isDirty: true,
+    reason
+  })
+}
+
+const scheduleAiContextUpdate = (reason = 'editor') => {
+  if (aiContextEmitTimer) {
+    clearTimeout(aiContextEmitTimer)
+  }
+  aiContextEmitTimer = setTimeout(() => {
+    emitAiContextUpdate(reason)
+  }, 250)
+}
 
 // 2. 初始化 Turndown 服务 (HTML -> MD)
 const turndownService = new TurndownService({
@@ -652,6 +697,7 @@ const debouncedUpdateNote = debounce(async (meta, file) => {
       if (noteInList) {
         Object.assign(noteInList, updatedVo);
       }
+      emitAiContextUpdate('autosaved')
     }
 
     isLoading.value = false;
@@ -754,6 +800,7 @@ const editor = useEditor({
 
       // 1. 本地状态同步
       currentNote.value.content = markdownContent;
+      scheduleAiContextUpdate('typing')
 
       // 2. 构造 File 对象
       const blob = new Blob([markdownContent], { type: 'text/markdown' });
@@ -822,6 +869,7 @@ const saveNoteContent = async () => {
     }
 
     showSuccess('笔记内容保存成功！');
+    emitAiContextUpdate('saved');
 
   } catch (error) {
     showError('保存笔记失败，请稍后重试。');
@@ -1065,6 +1113,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   editor.value?.destroy();
+  if (aiContextEmitTimer) {
+    clearTimeout(aiContextEmitTimer);
+    aiContextEmitTimer = null;
+  }
 });
 
 // ----------------- 【自定义弹窗函数】 -----------------
@@ -1267,6 +1319,7 @@ const selectNote = async (note) => {
     currentTitle.value = note.title;
     // 检查笔记是否在审核中（状态可能已变化）
     isNoteUnderModerationRef.value = await isNoteUnderModeration(note.id);
+    emitAiContextUpdate('same-note')
     return;
   }
   
@@ -1283,6 +1336,7 @@ const selectNote = async (note) => {
   
   // 通知父组件当前选中的笔记ID
   emit('note-selected', note.id);
+  emitAiContextUpdate('select-note')
 
   // 1. 获取文件名 (假设 note 对象中包含文件名)
   const fileName = note.filename;
@@ -1305,12 +1359,14 @@ const selectNote = async (note) => {
       // 3. 处理 PDF 预览
       pdfPreviewUrl.value = fileUrl;
       console.log(`PDF Preview URL: ${fileUrl}`);
+      emitAiContextUpdate('pdf-loaded')
     } else if (note.fileType === 'md' && editor.value) {
       // 4. 处理 Markdown 文件
       // 使用原始 URL，不添加时间戳参数（MinIO presigned URL 可能不支持额外参数）
       const markdownContent = await fetchFileContentByUrl(fileUrl);
       const htmlContent = mdParser.render(markdownContent || '');
       editor.value.commands.setContent(htmlContent, false);
+      emitAiContextUpdate('md-loaded')
       nextTick(() => {
         safeEditorFocus(() => {
         editor.value.commands.focus('end');
@@ -1324,6 +1380,7 @@ const selectNote = async (note) => {
     showError('加载笔记内容失败，请检查文件链接。');
     // 如果加载失败，清空编辑器/预览区
     editor.value?.commands.setContent('', false);
+    emitAiContextUpdate('load-error')
     }
   } finally {
     // 清除加载状态
