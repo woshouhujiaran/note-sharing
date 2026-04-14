@@ -14,7 +14,7 @@
 - `AI_MODEL_PROVIDER`：默认 `openai_compatible`
 - `AI_MODEL_BASE_URL`：默认 `https://ark.cn-beijing.volces.com/api/coding/v3`
 - `AI_MODEL_API_KEY`：默认留空，接入时填你的 API Key
-- `AI_MODEL_NAME`：默认留空，填写你要使用的模型名
+- `AI_MODEL_NAME`：默认 `ark-code-latest`
 - `AI_MODEL_TEMPERATURE`：默认 `0.3`
 - `AI_MODEL_MAX_TOKENS`：默认 `1200`
 - `AI_MODEL_TIMEOUT`：默认 `30`
@@ -29,7 +29,7 @@
 AI_MODEL_PROVIDER=openai_compatible
 AI_MODEL_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
 AI_MODEL_API_KEY=
-AI_MODEL_NAME=
+AI_MODEL_NAME=ark-code-latest
 AI_MODEL_TEMPERATURE=0.3
 AI_MODEL_MAX_TOKENS=1200
 AI_MODEL_TIMEOUT=30

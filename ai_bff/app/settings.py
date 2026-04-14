@@ -11,7 +11,7 @@ class Settings:
     model_provider: str = os.getenv("AI_MODEL_PROVIDER", "openai_compatible")
     model_base_url: str = os.getenv("AI_MODEL_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
     model_api_key: str = os.getenv("AI_MODEL_API_KEY", "")
-    model_name: str = os.getenv("AI_MODEL_NAME", "")
+    model_name: str = os.getenv("AI_MODEL_NAME", "ark-code-latest")
     model_temperature: float = float(os.getenv("AI_MODEL_TEMPERATURE", "0.3"))
     model_max_tokens: int = int(os.getenv("AI_MODEL_MAX_TOKENS", "1200"))
     model_timeout: float = float(os.getenv("AI_MODEL_TIMEOUT", "30"))
