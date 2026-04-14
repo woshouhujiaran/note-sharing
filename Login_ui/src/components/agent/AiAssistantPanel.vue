@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <transition name="ai-panel-fade">
     <div v-if="visible" class="ai-panel-shell" :class="{ 'is-docked': panelPinned }">
       <section class="ai-panel">

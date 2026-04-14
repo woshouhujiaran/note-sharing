@@ -215,7 +215,7 @@ const fetchNoteTimes = async (items) => {
         }
       }
     } catch (err) {
-      console.warn(`?????? ${item.noteId} ??????:`, err)
+      console.warn(`读取笔记 ${item.noteId} 的补充时间失败:`, err)
     } finally {
       item._timeLoading = false
     }
