@@ -21,7 +21,9 @@
 - `AI_BFF_HOST`：默认 `0.0.0.0`
 - `AI_BFF_PORT`：默认 `8000`
 - `AI_JWT_SECRET`：可选，用于验证 HS256 JWT
-- `AI_ALLOWED_ORIGINS`：逗号分隔的前端来源
+- `AI_ALLOWED_ORIGINS`：逗号分隔的前端来源，示例包含 `http://localhost:8080` 和 `http://localhost:8082`
+
+如果 `ai_bff/.env` 存在，BFF 启动时会自动读取它，优先使用其中的配置值。
 
 ## 火山方舟接入示例
 
