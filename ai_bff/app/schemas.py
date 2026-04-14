@@ -55,3 +55,29 @@ class SimilarQuestionResponse(BaseModel):
     items: list[SimilarQuestionItem]
     ai_generated: bool = True
 
+
+class NoteSummaryRequest(BaseModel):
+    note_id: int
+    keyword: str | None = None
+    context: HostContext | dict[str, Any] = Field(default_factory=dict)
+
+
+class NoteSummaryResponse(BaseModel):
+    note: dict[str, Any]
+    summary: str
+    related_notes: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    ai_generated: bool = True
+
+
+class QuestionReferenceRequest(BaseModel):
+    question_id: str
+    context: HostContext | dict[str, Any] = Field(default_factory=dict)
+
+
+class QuestionReferenceResponse(BaseModel):
+    question: dict[str, Any]
+    references: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str
+    ai_generated: bool = True

@@ -11,7 +11,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from .agent import AgentRuntime
 from .auth import AuthError, extract_user_from_authorization
 from .login_api_client import LoginApiClient
-from .schemas import ChatRequest, KeywordRequest, SimilarQuestionRequest
+from .schemas import (
+    ChatRequest,
+    KeywordRequest,
+    NoteSummaryRequest,
+    QuestionReferenceRequest,
+    SimilarQuestionRequest,
+)
 from .settings import settings
 
 app = FastAPI(title=settings.app_name)
@@ -288,4 +294,20 @@ async def similar_questions(request: Request, authorization: str | None = Header
     auth_token = _auth_token(authorization)
     payload = SimilarQuestionRequest.model_validate(await request.json())
     result = await agent_runtime.similar_questions(payload, auth_token)
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/agent/notes/summary")
+async def note_summary(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = NoteSummaryRequest.model_validate(await request.json())
+    result = await agent_runtime.summarize_note(payload, auth_token)
+    return JSONResponse(result)
+
+
+@app.post("/api/v1/agent/questions/reference")
+async def question_reference(request: Request, authorization: str | None = Header(default=None)):
+    auth_token = _auth_token(authorization)
+    payload = QuestionReferenceRequest.model_validate(await request.json())
+    result = await agent_runtime.reference_question(payload, auth_token)
     return JSONResponse(result)
