@@ -5,6 +5,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from .login_api_client import LoginApiClient
+from .model_client import OpenAICompatibleModelClient
+from .settings import settings
 from .schemas import (
     ChatRequest,
     KeywordRequest,
@@ -64,6 +66,53 @@ def _extract_keywords(text: str) -> list[str]:
         if item not in candidates:
             candidates.append(item)
     return candidates[:8] or ["知识整理", "AI 协作", "笔记助手"]
+
+
+def _build_content_messages(request: dict[str, Any], facts: list[str]) -> tuple[str, str]:
+    context = _get_context(request)
+    resource = _get_resource(context)
+    message = str(request.get("message") or "")
+    page = context.get("page", {})
+    resource_title = _resource_label(resource)
+    resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 420)
+    facts_text = "\n".join(f"- {item}" for item in facts if item)
+    system_prompt = (
+        "你是站内 AI 助手，必须基于给定上下文回答。"
+        "如果上下文包含正文片段，请优先围绕正文片段给出反馈。"
+        "回答要求：简洁、具体、可执行，不要编造未提供的信息。"
+    )
+    user_prompt = (
+        f"当前页面: {page.get('tab') or 'unknown'}\n"
+        f"当前资源: {resource.get('kind') or 'unknown'} / {resource_title}\n"
+        f"用户消息: {message}\n"
+        f"正文片段: {resource_preview or '无'}\n"
+        f"上下文事实:\n{facts_text or '- 无'}"
+    )
+    return system_prompt, user_prompt
+
+
+def _build_summary_messages(title: str, summary_source: str, facts: list[str]) -> tuple[str, str]:
+    system_prompt = "你是笔记摘要助手，输出必须围绕当前内容，给出清晰、具体、可执行的摘要。"
+    facts_text = "\n".join(f"- {item}" for item in facts if item)
+    user_prompt = (
+        f"笔记标题: {title}\n"
+        f"摘要素材: {summary_source}\n"
+        f"上下文事实:\n{facts_text or '- 无'}\n"
+        "请输出一段适合站内展示的笔记摘要。"
+    )
+    return system_prompt, user_prompt
+
+
+def _build_question_reference_messages(title: str, summary_source: str, facts: list[str]) -> tuple[str, str]:
+    system_prompt = "你是问答引用助手，输出必须围绕当前问题内容，给出清晰、具体、可执行的总结。"
+    facts_text = "\n".join(f"- {item}" for item in facts if item)
+    user_prompt = (
+        f"问题标题: {title}\n"
+        f"问题素材: {summary_source}\n"
+        f"上下文事实:\n{facts_text or '- 无'}\n"
+        "请输出一段适合站内展示的问答引用摘要。"
+    )
+    return system_prompt, user_prompt
 async def _collect_facts(state: AgentState, client: LoginApiClient) -> AgentState:
     request = state.get("request", {})
     context = _get_context(request)
@@ -257,6 +306,14 @@ def _draft_answer(state: AgentState) -> AgentState:
 class AgentRuntime:
     def __init__(self, login_api_client: LoginApiClient):
         self._login_api_client = login_api_client
+        self._model_client = OpenAICompatibleModelClient(
+            base_url=settings.model_base_url,
+            api_key=settings.model_api_key,
+            model_name=settings.model_name,
+            temperature=settings.model_temperature,
+            max_tokens=settings.model_max_tokens,
+            timeout=settings.model_timeout,
+        )
         self._graph = self._build_graph()
 
     def _build_graph(self):
@@ -273,13 +330,20 @@ class AgentRuntime:
         return builder.compile()
 
     async def run(self, request: ChatRequest, auth_token: str | None = None) -> dict[str, Any]:
-        result = await self._graph.ainvoke({"request": request.model_dump(), "auth_token": auth_token})
+        state = await self._graph.ainvoke({"request": request.model_dump(), "auth_token": auth_token})
+        answer = state.get("answer", "")
+        if self._model_client.is_enabled:
+            try:
+                system_prompt, user_prompt = _build_content_messages(request.model_dump(), state.get("facts", []))
+                answer = await self._model_client.chat(system_prompt, user_prompt)
+            except Exception as exc:  # noqa: BLE001
+                answer = f"{answer}\n\n模型调用失败，已回退本地规则：{exc.__class__.__name__}"
         return {
-            "answer": result.get("answer", ""),
-            "citations": result.get("citations", []),
-            "route": result.get("route"),
+            "answer": answer,
+            "citations": state.get("citations", []),
+            "route": state.get("route"),
             "ai_generated": True,
-            "source": "langgraph",
+            "source": "openai-compatible" if self._model_client.is_enabled else "langgraph",
         }
 
     async def keywords(self, request: KeywordRequest, auth_token: str | None = None) -> dict[str, Any]:
@@ -302,6 +366,17 @@ class AgentRuntime:
         if resource_preview:
             summary_source = f"基于宿主提供的正文片段：{resource_preview}"
         summary = f"笔记《{title}》：{summary_source}" if summary_source else f"当前笔记《{title}》已接入只读代理，后续可继续接入正文摘要。"
+
+        if self._model_client.is_enabled:
+            try:
+                system_prompt, user_prompt = _build_summary_messages(title, summary_source or "无", [
+                    f"笔记标题：{title}",
+                    f"相关笔记数量：{len(related_notes)}",
+                    f"正文片段：{resource_preview or '无'}",
+                ])
+                summary = await self._model_client.chat(system_prompt, user_prompt)
+            except Exception as exc:  # noqa: BLE001
+                summary = f"{summary}\n\n模型调用失败，已回退本地规则：{exc.__class__.__name__}"
 
         citations = [
             {
@@ -341,6 +416,21 @@ class AgentRuntime:
         resource_preview = _preview_text(resource.get("contentPreview") or resource.get("content") or "", 220)
         if resource_preview:
             summary = f"基于宿主提供的问答片段：{resource_preview}"
+
+        if self._model_client.is_enabled:
+            try:
+                system_prompt, user_prompt = _build_question_reference_messages(
+                    question_title,
+                    summary or "无",
+                    [
+                        f"回答数量：{answer_count}",
+                        f"相似问题数量：{len(similar_questions)}",
+                        f"问答片段：{resource_preview or '无'}",
+                    ],
+                )
+                summary = await self._model_client.chat(system_prompt, user_prompt)
+            except Exception as exc:  # noqa: BLE001
+                summary = f"{summary}\n\n模型调用失败，已回退本地规则：{exc.__class__.__name__}"
 
         references = []
         for answer in (question.get("answers") or [])[:2]:
