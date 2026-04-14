@@ -187,6 +187,9 @@ async def shell():
     const input = document.getElementById("input");
     const contextBox = document.getElementById("context");
     let hostContext = null;
+    let authToken = "";
+    let assistantNode = null;
+    let assistantNodeId = 0;
 
     function append(role, text) {
       const el = document.createElement("div");
@@ -194,27 +197,128 @@ async def shell():
       el.textContent = text;
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
+      return el;
+    }
+
+    function updateNode(node, text) {
+      if (!node) return;
+      node.textContent = text;
+      log.scrollTop = log.scrollHeight;
     }
 
     function sendToHost(type, payload) {
       window.parent.postMessage({ version, type, payload }, "*");
     }
 
-    function handleChatMessage(message) {
+    function buildHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      if (authToken) {
+        headers.Authorization = "Bearer " + authToken;
+      }
+      return headers;
+    }
+
+    function getChatContext() {
+      return hostContext || { version };
+    }
+
+    async function streamChat(message) {
+      if (!authToken) {
+        updateNode(assistantNode, "未收到登录令牌，无法调用 BFF。");
+        return;
+      }
+
+      const response = await fetch("/api/v1/agent/chat/stream", {
+        method: "POST",
+        headers: buildHeaders(),
+        body: JSON.stringify({
+          message,
+          context: getChatContext(),
+          mode: "iframe"
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("BFF " + response.status);
+      }
+
+      if (!response.body) {
+        const data = await response.json();
+        updateNode(assistantNode, data.answer || "未返回内容");
+        if (data.route) {
+          sendToHost("ai.route", data.route);
+        }
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let finalAnswer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+
+        for (const block of blocks) {
+          const line = block.split("\n").find(item => item.startsWith("data:"));
+          if (!line) continue;
+          const raw = line.slice(5).trim();
+          if (!raw) continue;
+
+          let evt = null;
+          try {
+            evt = JSON.parse(raw);
+          } catch (error) {
+            continue;
+          }
+
+          if (evt.delta) {
+            finalAnswer += evt.delta;
+            updateNode(assistantNode, finalAnswer);
+          }
+
+          if (evt.done) {
+            finalAnswer = evt.answer || finalAnswer;
+            updateNode(assistantNode, finalAnswer);
+            if (evt.route) {
+              sendToHost("ai.route", evt.route);
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const line = buffer.split("\n").find(item => item.startsWith("data:"));
+        if (line) {
+          const raw = line.slice(5).trim();
+          if (raw) {
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.done && evt.answer) {
+                updateNode(assistantNode, evt.answer);
+                if (evt.route) {
+                  sendToHost("ai.route", evt.route);
+                }
+              }
+            } catch (error) {}
+          }
+        }
+      }
+    }
+
+    async function handleChatMessage(message) {
       if (!message) return;
       append("user", message);
-      const lower = message.toLowerCase();
-      let answer = "我已经收到消息，并在 iframe 壳内完成了稳定回显。";
-      if (message.includes("标题") || lower.includes("title")) {
-        answer = "标题候选：1. 页面结构化整理 2. 当前内容摘要 3. AI 协作笔记";
-      } else if (message.includes("关键词") || lower.includes("keywords")) {
-        answer = "关键词：AI 协作、笔记整理、上下文、引用、搜索";
-      } else if (message.includes("总结") || lower.includes("summary")) {
-        answer = "当前页面上下文已记录，可继续进行标题生成、关键词提炼或跳转建议。";
-      }
-      append("assistant", answer);
-      if (lower.includes("搜索") || lower.includes("search")) {
-        sendToHost("ai.route", { path: "/main", query: { tab: "search" } });
+      assistantNode = append("assistant", "正在向 BFF 请求内容反馈...");
+      try {
+        await streamChat(message);
+      } catch (error) {
+        updateNode(assistantNode, "BFF 请求失败：" + (error && error.message ? error.message : "unknown"));
       }
     }
 
@@ -226,6 +330,7 @@ async def shell():
       if (data.type === "ai.context") {
         hostContext = data.payload || null;
         contextBox.textContent = JSON.stringify(hostContext, null, 2);
+        authToken = (hostContext && hostContext.session && hostContext.session.authToken) ? String(hostContext.session.authToken) : "";
         sendToHost("ai.ready", { ok: true });
       }
       if (data.type === "ai.chat") {
@@ -245,9 +350,9 @@ async def shell():
       button.addEventListener("click", () => {
         const action = button.getAttribute("data-action");
         const mapping = {
-          title: "请根据当前上下文生成标题。",
-          summary: "请总结当前页面内容。",
-          keywords: "请抽取当前页面的关键词。",
+          title: "请根据当前上下文生成标题候选，并说明每个标题适合的场景。",
+          summary: "请总结当前页面内容，并给出可执行建议。",
+          keywords: "请抽取当前页面的关键词，并按重要性排序。",
           route: "请给出一个推荐跳转。"
         };
         const message = mapping[action];

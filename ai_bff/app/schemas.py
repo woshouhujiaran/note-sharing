@@ -11,6 +11,7 @@ class HostContext(BaseModel):
     route: dict[str, Any] = Field(default_factory=dict)
     page: dict[str, Any] = Field(default_factory=dict)
     resource: dict[str, Any] = Field(default_factory=dict)
+    session: dict[str, Any] = Field(default_factory=dict)
     user: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, Any] = Field(default_factory=dict)
 

@@ -582,7 +582,8 @@ function syncContextToFrame() {
     selectedWorkspaceId: props.context?.selectedWorkspaceId,
     editingNotebookId: props.context?.editingNotebookId,
     editingSpaceId: props.context?.editingSpaceId,
-    resource: props.context?.resource
+    resource: props.context?.resource,
+    authToken: getAiToken()
   })
 
   frame.contentWindow.postMessage(

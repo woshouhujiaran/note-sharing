@@ -53,7 +53,8 @@ export function buildAiHostSnapshot({
   selectedWorkspaceId,
   editingNotebookId,
   editingSpaceId,
-  resource
+  resource,
+  authToken
 }) {
   return {
     version: AI_PROTOCOL_VERSION,
@@ -92,6 +93,9 @@ export function buildAiHostSnapshot({
           tags: Array.isArray(resource.tags) ? resource.tags.slice(0, 10) : []
         }
       : null,
+    session: {
+      authToken: authToken || null
+    },
     user: {
       id: userInfo?.id || null,
       username: userInfo?.username || null,
