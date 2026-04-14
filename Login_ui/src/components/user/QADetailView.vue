@@ -69,6 +69,30 @@
               删除问题
             </button>
           </div>
+          <div class="qa-ai-panel">
+            <div class="qa-ai-panel-header">
+              <div>
+                <h3 class="section-title">AI 工具</h3>
+                <p class="qa-ai-panel-subtitle">围绕当前问题、回答和追问做更细的分析。</p>
+              </div>
+              <span class="qa-ai-panel-badge">{{ aiToolActive === 'summary' ? '总结' : aiToolActive }}</span>
+            </div>
+            <div class="qa-ai-actions">
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('summary')">总结</button>
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('answer')">回答思路</button>
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('similar')">相似问题</button>
+              <button class="qa-ai-btn" type="button" :disabled="aiToolLoading" @click="runQuestionAiTool('followup')">追问</button>
+            </div>
+            <div v-if="aiToolResult" class="qa-ai-result">
+              <div class="qa-ai-result-title">{{ aiToolResult.title }}</div>
+              <div class="qa-ai-result-content">{{ aiToolResult.content }}</div>
+              <div v-if="aiToolResult.meta && Array.isArray(aiToolResult.meta)" class="qa-ai-result-meta">
+                <div v-for="item in aiToolResult.meta.slice(0, 3)" :key="item.questionId || item.answerId || item.title" class="qa-ai-result-chip">
+                  {{ item.title || item.content || '相关内容' }}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 回答编辑器 -->
@@ -284,6 +308,7 @@ import {
 import { formatTime } from '@/utils/time'
 import MessageToast from '@/components/MessageToast.vue'
 import { useMessage } from '@/utils/message'
+import { buildAiRequestContext, postAiJson } from '@/api/ai'
 
 const router = useRouter()
 const route = useRoute()
@@ -328,6 +353,9 @@ const commentInputs = ref({})
 const activeReplyAnswerId = ref(null)
 const activeReplyCommentId = ref(null)
 const replyInputs = ref({})
+const aiToolLoading = ref(false)
+const aiToolResult = ref(null)
+const aiToolActive = ref('summary')
 
 const extractPlainText = (value) => {
   if (!value) return ''
@@ -362,6 +390,110 @@ const emitAiContextUpdate = (reason = 'qa-detail') => {
     updatedAt: question.value.createdAt || null,
     reason
   })
+}
+
+const buildQuestionAiContext = () => {
+  const contentPreview = extractPlainText(question.value.content || '')
+  return buildAiRequestContext(
+    {
+      kind: 'qa-detail',
+      id: question.value.questionId,
+      questionId: question.value.questionId,
+      title: question.value.title || '未命名问题',
+      contentPreview,
+      contentLength: contentPreview.length,
+      answerCount: question.value.answers?.length || 0,
+      commentCount: question.value.answers?.reduce((total, answer) => total + (answer.comments?.length || 0), 0) || 0,
+      tags: Array.isArray(question.value.tags) ? question.value.tags.slice(0, 10) : []
+    },
+    {
+      page: {
+        tab: 'qa-detail',
+        questionId: question.value.questionId
+      },
+      user: {
+        id: userStore.userInfo?.id || null,
+        username: userStore.userInfo?.username || null,
+        role: userStore.userInfo?.role || null
+      },
+      permissions: {
+        canAccessWriteActions: true
+      }
+    }
+  )
+}
+
+const runQuestionAiTool = async (tool) => {
+  if (!question.value) return
+
+  aiToolActive.value = tool
+  aiToolLoading.value = true
+  aiToolResult.value = {
+    type: tool,
+    title: '处理中...',
+    content: '正在向 AI BFF 请求内容分析。'
+  }
+
+  try {
+    const context = buildQuestionAiContext()
+    let data
+
+    if (tool === 'summary') {
+      data = await postAiJson('/api/v1/agent/questions/reference', {
+        question_id: String(question.value.questionId),
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '问题总结',
+        content: data.summary || '暂无总结',
+        meta: data.references || [],
+        citations: data.citations || []
+      }
+    } else if (tool === 'similar') {
+      data = await postAiJson('/api/v1/agent/similar-questions', {
+        question: `${question.value.title || ''}\n${question.value.content || ''}`,
+        context,
+        limit: 3
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '相似问题',
+        content: Array.isArray(data.items) ? data.items.map(item => item.title).join('；') : '暂无相似问题',
+        meta: data.items || []
+      }
+    } else if (tool === 'answer') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前问题内容给出一个可直接发布的回答思路，分点说明。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '回答思路',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    } else if (tool === 'followup') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前问题生成 3 个高质量追问，帮助补充上下文。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '追问建议',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    }
+  } catch (err) {
+    aiToolResult.value = {
+      type: tool,
+      title: 'AI 请求失败',
+      content: err?.message || '请稍后重试'
+    }
+  } finally {
+    aiToolLoading.value = false
+  }
 }
 
 // 获取问题详情
@@ -1018,6 +1150,7 @@ onMounted(() => {
 .question-actions {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .action-btn {
@@ -1048,6 +1181,97 @@ onMounted(() => {
   background: rgba(220, 53, 69, 0.1);
   border-color: #dc3545;
   color: #c82333;
+}
+
+.qa-ai-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 127, 255, 0.14);
+  background: linear-gradient(180deg, rgba(0, 127, 255, 0.06), rgba(255, 255, 255, 0.98));
+}
+
+.qa-ai-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.qa-ai-panel-subtitle {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.qa-ai-panel-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 127, 255, 0.1);
+  color: var(--brand-primary);
+  font-size: 12px;
+}
+
+.qa-ai-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.qa-ai-btn {
+  border: 1px solid rgba(0, 127, 255, 0.14);
+  background: #fff;
+  color: var(--text-strong);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.qa-ai-btn:hover:not(:disabled) {
+  border-color: var(--brand-primary);
+}
+
+.qa-ai-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.qa-ai-result {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 127, 255, 0.12);
+  background: rgba(0, 127, 255, 0.05);
+}
+
+.qa-ai-result-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.qa-ai-result-content {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-strong);
+  white-space: pre-wrap;
+}
+
+.qa-ai-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.qa-ai-result-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(0, 127, 255, 0.08);
+  font-size: 11px;
+  color: var(--brand-primary);
 }
 
 .action-icon {

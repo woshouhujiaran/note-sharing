@@ -206,6 +206,28 @@
             <span class="action-count">{{ stats.favorites || 0 }}</span>
           </div>
         </button>
+
+        <section class="ai-tool-card">
+          <div class="ai-tool-header">
+            <span class="ai-tool-title">AI 工具</span>
+            <span class="ai-tool-badge">{{ aiToolActive === 'summary' ? '摘要' : aiToolActive }}</span>
+          </div>
+          <div class="ai-tool-grid">
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('summary')">摘要</button>
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('title')">标题</button>
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('keywords')">关键词</button>
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('notes')">延伸</button>
+          </div>
+          <div class="ai-tool-result" v-if="aiToolResult">
+            <div class="ai-tool-result-title">{{ aiToolResult.title }}</div>
+            <div class="ai-tool-result-content">{{ aiToolResult.content }}</div>
+            <div v-if="aiToolResult.meta && Array.isArray(aiToolResult.meta)" class="ai-tool-result-meta">
+              <div v-for="item in aiToolResult.meta.slice(0, 2)" :key="item.noteId || item.title" class="ai-tool-result-chip">
+                {{ item.title || item.summary || '相关内容' }}
+              </div>
+            </div>
+          </div>
+        </section>
       </aside>
     </div>
 
@@ -251,6 +273,7 @@ import MessageToast from '@/components/MessageToast.vue'
 import FollowButton from '@/components/FollowButton.vue'
 import CommentItem from '@/components/user/CommentItem.vue'
 import { useMessage } from '@/utils/message'
+import { buildAiRequestContext, postAiJson } from '@/api/ai'
 import { Client as StompClient } from '@stomp/stompjs'
 import SockJS from 'sockjs-client'
 
@@ -311,6 +334,9 @@ const debounceTimers = ref({})
 const fileUrl = ref(null)
 const markdownContent = ref('')
 const fileUnavailable = ref(false)
+const aiToolLoading = ref(false)
+const aiToolResult = ref(null)
+const aiToolActive = ref('summary')
 
 const extractPlainText = (value) => {
   if (!value) return ''
@@ -338,6 +364,110 @@ const emitAiContextUpdate = (reason = 'note-detail') => {
     updatedAt: noteDetail.value.createdAt || null,
     reason
   })
+}
+
+const buildNoteAiContext = () => {
+  const contentPreview = extractPlainText(markdownContent.value || noteDetail.value?.content || '')
+  return buildAiRequestContext(
+    {
+      kind: 'note-detail',
+      id: noteDetail.value.noteId,
+      noteId: noteDetail.value.noteId,
+      title: noteDetail.value.title || props.initialTitle || '无标题笔记',
+      fileType: noteDetail.value.fileType || null,
+      contentPreview,
+      contentLength: contentPreview.length,
+      commentCount: comments.value.length || 0,
+      updatedAt: noteDetail.value.createdAt || null
+    },
+    {
+      page: {
+        tab: 'note-detail',
+        viewingNoteId: noteDetail.value.noteId
+      },
+      user: {
+        id: userStore.userInfo?.id || null,
+        username: userStore.userInfo?.username || null,
+        role: userStore.userInfo?.role || null
+      },
+      permissions: {
+        canAccessWriteActions: true
+      }
+    }
+  )
+}
+
+const runNoteAiTool = async (tool) => {
+  if (!noteDetail.value) return
+
+  aiToolActive.value = tool
+  aiToolLoading.value = true
+  aiToolResult.value = {
+    type: tool,
+    title: '处理中...',
+    content: '正在向 AI BFF 请求内容分析。'
+  }
+
+  try {
+    const context = buildNoteAiContext()
+    let data
+
+    if (tool === 'summary') {
+      data = await postAiJson('/api/v1/agent/notes/summary', {
+        note_id: Number(noteDetail.value.noteId),
+        keyword: noteDetail.value.title || undefined,
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '笔记摘要',
+        content: data.summary || '暂无摘要',
+        meta: data.related_notes || [],
+        citations: data.citations || []
+      }
+    } else if (tool === 'keywords') {
+      data = await postAiJson('/api/v1/agent/keywords', {
+        text: `${noteDetail.value.title || ''}\n${extractPlainText(markdownContent.value || '')}`,
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '关键词',
+        content: Array.isArray(data.keywords) ? data.keywords.join('、') : '暂无关键词',
+        meta: data.explain || ''
+      }
+    } else if (tool === 'title') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前笔记内容给出 3 个更好的标题候选，并简要说明适用场景。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '标题候选',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    } else if (tool === 'notes') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前笔记内容给出相似笔记方向、可补充点和下一步建议。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '延伸建议',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    }
+  } catch (err) {
+    aiToolResult.value = {
+      type: tool,
+      title: 'AI 请求失败',
+      content: err?.message || '请稍后重试'
+    }
+  } finally {
+    aiToolLoading.value = false
+  }
 }
 
 // 评论相关状态
@@ -2066,6 +2196,97 @@ onUnmounted(() => {
   width: 150px;
 }
 
+.ai-tool-card {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 127, 255, 0.14);
+  background: linear-gradient(180deg, rgba(0, 127, 255, 0.06), rgba(255, 255, 255, 0.96));
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.ai-tool-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ai-tool-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.ai-tool-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--brand-primary);
+  background: rgba(0, 127, 255, 0.1);
+}
+
+.ai-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-tool-button {
+  border: 1px solid rgba(0, 127, 255, 0.14);
+  background: #fff;
+  color: var(--text-strong);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-tool-button:hover:not(:disabled) {
+  border-color: var(--brand-primary);
+}
+
+.ai-tool-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.ai-tool-result {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(0, 127, 255, 0.06);
+  border: 1px solid rgba(0, 127, 255, 0.12);
+}
+
+.ai-tool-result-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.ai-tool-result-content {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-strong);
+  white-space: pre-wrap;
+}
+
+.ai-tool-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ai-tool-result-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(0, 127, 255, 0.08);
+  font-size: 11px;
+  color: var(--brand-primary);
+  max-width: 100%;
+}
+
 .action-button {
   display: flex;
   align-items: center;
@@ -2138,11 +2359,17 @@ onUnmounted(() => {
     position: static;
     width: 100%;
     flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .action-button {
     flex: 1;
     justify-content: center;
+  }
+
+  .ai-tool-card {
+    width: 100%;
+    order: 3;
   }
 
   .action-text {
