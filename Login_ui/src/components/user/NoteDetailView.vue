@@ -210,13 +210,15 @@
         <section class="ai-tool-card">
           <div class="ai-tool-header">
             <span class="ai-tool-title">AI 工具</span>
-            <span class="ai-tool-badge">{{ aiToolActive === 'summary' ? '摘要' : aiToolActive }}</span>
+            <span class="ai-tool-badge">{{ getNoteAiToolLabel(aiToolActive) }}</span>
           </div>
           <div class="ai-tool-grid">
             <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('summary')">摘要</button>
             <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('title')">标题</button>
             <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('keywords')">关键词</button>
             <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('notes')">延伸</button>
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('rewrite')">改写</button>
+            <button class="ai-tool-button" type="button" :disabled="aiToolLoading" @click="runNoteAiTool('outline')">提纲</button>
           </div>
           <div class="ai-tool-result" v-if="aiToolResult">
             <div class="ai-tool-result-title">{{ aiToolResult.title }}</div>
@@ -224,6 +226,15 @@
             <div v-if="aiToolResult.meta && Array.isArray(aiToolResult.meta)" class="ai-tool-result-meta">
               <div v-for="item in aiToolResult.meta.slice(0, 2)" :key="item.noteId || item.title" class="ai-tool-result-chip">
                 {{ item.title || item.summary || '相关内容' }}
+              </div>
+            </div>
+            <div v-if="aiToolResult.citations && aiToolResult.citations.length" class="ai-tool-result-citations">
+              <div
+                v-for="item in aiToolResult.citations.slice(0, 3)"
+                :key="item.noteId || item.url || item.title"
+                class="ai-tool-result-citation"
+              >
+                {{ item.title || item.url || '引用来源' }}
               </div>
             </div>
           </div>
@@ -337,6 +348,15 @@ const fileUnavailable = ref(false)
 const aiToolLoading = ref(false)
 const aiToolResult = ref(null)
 const aiToolActive = ref('summary')
+
+const noteAiToolLabels = {
+  summary: '摘要',
+  title: '标题',
+  keywords: '关键词',
+  notes: '延伸',
+  rewrite: '改写',
+  outline: '提纲'
+}
 
 const extractPlainText = (value) => {
   if (!value) return ''
@@ -458,6 +478,28 @@ const runNoteAiTool = async (tool) => {
         content: data.answer || '暂无结果',
         citations: data.citations || []
       }
+    } else if (tool === 'rewrite') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前笔记内容给出 3 条可直接执行的改写建议，按优先级排序，并指出最值得先改的地方。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '改写建议',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
+    } else if (tool === 'outline') {
+      data = await postAiJson('/api/v1/agent/chat', {
+        message: '请基于当前笔记内容整理成一个层级化提纲，要求先给总纲，再给 3 到 5 个子标题。',
+        context
+      })
+      aiToolResult.value = {
+        type: tool,
+        title: '结构提纲',
+        content: data.answer || '暂无结果',
+        citations: data.citations || []
+      }
     }
   } catch (err) {
     aiToolResult.value = {
@@ -468,6 +510,10 @@ const runNoteAiTool = async (tool) => {
   } finally {
     aiToolLoading.value = false
   }
+}
+
+const getNoteAiToolLabel = (tool) => {
+  return noteAiToolLabels[tool] || tool || '摘要'
 }
 
 // 评论相关状态
@@ -2285,6 +2331,23 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--brand-primary);
   max-width: 100%;
+}
+
+.ai-tool-result-citations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ai-tool-result-citation {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(0, 127, 255, 0.08);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
 }
 
 .action-button {
